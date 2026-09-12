@@ -3,19 +3,24 @@
 Phase 0 — Project skeleton (echo).
 Phase 1 — run_command MVP + check_env.
 Phase 2 — list_binaries + which.
+v0.2   — cwd allowlist (executor.py), error hints (make_error_response),
+        bash_mcp_status tool.
 """
 
 import argparse
 import os
 import platform
 import shutil
+import time
+from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
 
-from bash_mcp import audit
+from bash_mcp import __version__, audit
 from bash_mcp import discovery
 from bash_mcp.executor import (
+    ALLOWED_CWD_ROOTS,
     DEFAULT_TIMEOUT_MS,
     BashNotFoundError,
     ExecutionResult,
@@ -25,6 +30,65 @@ from bash_mcp.executor import (
 from bash_mcp.safety import Class, Classification, classify
 
 mcp = FastMCP("bash-mcp")
+
+# Module-level state for the status tool
+_START_TIME = time.time()
+_AUDIT_PATH = Path.home() / ".local" / "share" / "bash-mcp" / "audit.jsonl"
+
+# Documentation path for hints — points the agent to the skill
+_SKILL_DOC_PATH = "C:\\Users\\jesus\\.mavis\\skills\\bash-mcp\\SKILL.md"
+
+
+# --- Error envelope helpers (extracted for testability + reuse) ---
+
+def make_error_response(
+    code: str,
+    message: str,
+    hint: str,
+    matched_pattern: str | None = None,
+    audit_id: str | None = None,
+    classification: dict | None = None,
+) -> dict[str, Any]:
+    """Build a standardized error envelope.
+
+    Every error response from this server has the same shape:
+        {
+          "error": {
+            "code": "<machine-readable>",
+            "message": "<human-readable description>",
+            "hint": "<actionable next step>",
+            "documentation": "<path to skill or docs>",
+            "matched_pattern": "<regex that fired>" (if applicable),
+          },
+          "audit_id": "<id>" (if applicable),
+          "classification": {...} (if applicable),
+        }
+
+    Testable in isolation (tests/test_errors.py).
+    """
+    err: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "hint": hint,
+        "documentation": _SKILL_DOC_PATH + "#safety",
+    }
+    if matched_pattern is not None:
+        err["matched_pattern"] = matched_pattern
+    out: dict[str, Any] = {"error": err}
+    if audit_id is not None:
+        out["audit_id"] = audit_id
+    if classification is not None:
+        out["classification"] = classification
+    return out
+
+
+def _hint_for_invalid_cwd(cwd_attempted: str) -> str:
+    return (
+        f"cwd '{cwd_attempted}' is not under an allowed root. "
+        f"Allowed roots: {', '.join(ALLOWED_CWD_ROOTS)}. "
+        "If the path is a Windows-style path (C:\\foo), it is automatically converted "
+        "to /mnt/c/foo. Otherwise, pass a path under one of the allowed roots."
+    )
 
 
 @mcp.tool
@@ -50,7 +114,8 @@ def bash_run_command(
     Args:
         command: The bash command line (single string). Runs via `bash -lc`,
             so login-shell env (~/.bashrc) is loaded.
-        cwd: Absolute path to working directory. Defaults to $HOME.
+        cwd: Absolute path to working directory. Must be under one of the
+            allowed roots (see hint on INVALID_CWD error). Defaults to $HOME.
         timeout_ms: Hard cap on execution time. Default 30000 (30s).
             Max 600000 (10 min).
         env: Additional env vars to merge into the inherited environment
@@ -60,21 +125,15 @@ def bash_run_command(
             ALWAYS enforced and cannot be bypassed.
 
     Returns:
-        On success:
-            {stdout, stderr, exit_code, duration_ms, timed_out,
-             truncated, classification: {class, matched_pattern},
-             audit_id}
+        On success: {stdout, stderr, exit_code, duration_ms, timed_out,
+                     truncated, classification, audit_id}
+        On rejection: {error: {code, message, hint, documentation, ...}}
 
-        On rejection:
-            {error: {code: "FORBIDDEN_COMMAND" | "DANGEROUS_REQUIRES_OVERRIDE",
-                     message: str, matched_pattern: str}}
-
-    Safety:
-        Commands matching the HARD denylist are always rejected.
-        Commands matching the SOFT denylist require `dangerous=true`.
+    Safety: HARD denylist cannot be bypassed. SOFT denylist requires dangerous=true.
     """
     audit_id = audit.new_audit_id()
 
+    # Step 1: classify
     cls: Classification = classify(command)
     if cls.cls == Class.REJECT:
         audit.log({
@@ -87,15 +146,19 @@ def bash_run_command(
             "outcome": "REJECTED",
             "reason": "matched hard denylist",
         })
-        return {
-            "error": {
-                "code": "FORBIDDEN_COMMAND",
-                "message": "Command matches the hard denylist and cannot be executed.",
-                "matched_pattern": cls.matched_pattern,
-            },
-            "audit_id": audit_id,
-            "classification": cls.to_dict(),
-        }
+        return make_error_response(
+            code="FORBIDDEN_COMMAND",
+            message="Command matches the hard denylist and cannot be executed.",
+            hint=(
+                "This pattern cannot be bypassed even with dangerous=true. "
+                "Modify the command to avoid the dangerous fragment "
+                "(e.g. use /tmp or /home instead of / for rm targets; "
+                "do not pipe curl/wget directly into bash)."
+            ),
+            matched_pattern=cls.matched_pattern,
+            audit_id=audit_id,
+            classification=cls.to_dict(),
+        )
 
     if cls.cls == Class.DANGEROUS and not dangerous:
         audit.log({
@@ -108,19 +171,19 @@ def bash_run_command(
             "outcome": "DENIED",
             "reason": "matched soft denylist; dangerous flag not set",
         })
-        return {
-            "error": {
-                "code": "DANGEROUS_COMMAND_REQUIRES_OVERRIDE",
-                "message": (
-                    "Command matches the soft denylist. "
-                    "Retry with dangerous=true if this is intentional."
-                ),
-                "matched_pattern": cls.matched_pattern,
-            },
-            "audit_id": audit_id,
-            "classification": cls.to_dict(),
-        }
+        return make_error_response(
+            code="DANGEROUS_COMMAND_REQUIRES_OVERRIDE",
+            message="Command matches the soft denylist and was not authorized.",
+            hint=(
+                "Retry with dangerous=true if this is intentional, OR remove the "
+                "dangerous fragment (e.g. drop sudo, use --no-force, drop kill -9)."
+            ),
+            matched_pattern=cls.matched_pattern,
+            audit_id=audit_id,
+            classification=cls.to_dict(),
+        )
 
+    # Step 2: execute
     try:
         result: ExecutionResult = exec_run(
             command=command,
@@ -130,12 +193,28 @@ def bash_run_command(
             audit_id=audit_id,
         )
     except BashNotFoundError as e:
-        return {"error": {"code": "BASH_NOT_FOUND", "message": str(e)}, "audit_id": audit_id}
+        return make_error_response(
+            code="BASH_NOT_FOUND",
+            message=str(e),
+            hint="bash binary not on PATH. Check the WSL environment.",
+            audit_id=audit_id,
+        )
     except InvalidCwdError as e:
-        return {"error": {"code": "INVALID_CWD", "message": str(e)}, "audit_id": audit_id}
+        return make_error_response(
+            code="INVALID_CWD",
+            message=str(e),
+            hint=_hint_for_invalid_cwd(cwd or "$HOME"),
+            audit_id=audit_id,
+        )
     except ValueError as e:
-        return {"error": {"code": "INVALID_ARGUMENT", "message": str(e)}, "audit_id": audit_id}
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message=str(e),
+            hint="Check timeout_ms range (1..600000) and that command is non-empty.",
+            audit_id=audit_id,
+        )
 
+    # Step 3: audit
     audit.log_command(
         tool="bash_run_command",
         args={
@@ -155,6 +234,7 @@ def bash_run_command(
         audit_id=audit_id,
     )
 
+    # Step 4: return
     payload = result.to_dict()
     payload["classification"] = cls.to_dict()
     payload["audit_id"] = audit_id
@@ -243,6 +323,69 @@ def bash_which(name: str) -> dict[str, Any]:
         - `version` is the first line of `<bin> --version`, truncated to 200 chars.
     """
     return discovery.which(name)
+
+
+@mcp.tool
+def bash_mcp_status() -> dict[str, Any]:
+    """Return health/stats for the bash-mcp service.
+
+    Read-only, no subprocess. Useful for verifying the service is up,
+    how many calls have been audit-logged, and what's installed.
+
+    Returns:
+        {service, version, uptime_seconds, start_time,
+         audit: {path, entries, size_bytes},
+         python_version, process: {pid, rss_bytes}, tools: [...]}
+    """
+    audit_size = 0
+    audit_entries = 0
+    if _AUDIT_PATH.exists():
+        audit_size = _AUDIT_PATH.stat().st_size
+        with _AUDIT_PATH.open("rb") as f:
+            for _ in f:
+                audit_entries += 1
+
+    pid = os.getpid()
+    rss_bytes: int | None = None
+    try:
+        import psutil  # noqa: F401 — optional, falls back below
+        rss_bytes = psutil.Process(pid).memory_info().rss
+    except ImportError:
+        # Fallback: read /proc/self/status directly (Linux only).
+        try:
+            with open("/proc/self/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        # VmRSS is in kB
+                        rss_bytes = int(line.split()[1]) * 1024
+                        break
+        except (OSError, ValueError):
+            pass
+
+    return {
+        "service": "active",
+        "version": __version__,
+        "uptime_seconds": int(time.time() - _START_TIME),
+        "start_time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(_START_TIME)),
+        "audit": {
+            "path": str(_AUDIT_PATH),
+            "entries": audit_entries,
+            "size_bytes": audit_size,
+        },
+        "python_version": platform.python_version(),
+        "process": {
+            "pid": pid,
+            "rss_bytes": rss_bytes,
+        },
+        "tools": [
+            "bash_run_command",
+            "bash_check_env",
+            "bash_list_binaries",
+            "bash_which",
+            "bash_mcp_status",
+            "echo",
+        ],
+    }
 
 
 def main() -> None:

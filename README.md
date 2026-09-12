@@ -14,6 +14,10 @@ Running WSL commands from PowerShell (`wsl -d Ubuntu-22.04 -- bash -lc "..."`) h
 
 `bash-mcp` solves all of these with one tool call returning `{stdout, stderr, exit_code, duration_ms, timed_out, truncated, classification, audit_id}`.
 
+## License
+
+[MIT](LICENSE)
+
 ## Tools
 
 | Tool | Purpose |
@@ -22,6 +26,7 @@ Running WSL commands from PowerShell (`wsl -d Ubuntu-22.04 -- bash -lc "..."`) h
 | `bash-mcp_check_env()` | OS, kernel, Python, uv, PATH entries. |
 | `bash-mcp_list_binaries()` | ~37 well-known tools with `{path, exists, version?}`. |
 | `bash-mcp_which(name)` | Resolve a single binary. |
+| `bash-mcp_status()` | Service health, audit stats, uptime, tool list. |
 
 All tools are namespaced as `bash-mcp_*` in MiniMax Code.
 
@@ -43,11 +48,14 @@ bash-mcp_run_command({command: "pytest -xvs", cwd: "/home/jbecerra/projects/myap
 
 // Bypass the SOFT denylist
 bash-mcp_run_command({command: "sudo systemctl restart nginx", dangerous: true})
+
+// Verify service health
+bash-mcp_status()
 ```
 
 ## ⚠️ DO NOT use `wsl -d ... -- bash -c "..."`
 
-A `PreToolUse` hook in MiniMax Code **denies** any shell call whose command starts with `wsl(\.exe)?\s`. If you trigger it, you'll see an abort reason pointing you here.
+A `PreToolUse` hook in MiniMax Code **denies** any shell call whose command starts with `wsl(\.exe)?\s`. If you trigger it, you'll see an abort reason pointing you to this README.
 
 **Escape hatch** (for genuine testing): prefix the command with `BASH_MCP_SKIP=1`.
 
@@ -73,6 +81,26 @@ Streamable-http transport. Stateless per call.
 | `reject` | Hard pattern (rm -rf /, dd of=/dev/sd*, fork bomb, mkfs) | Always reject |
 
 Hard patterns are never bypassed, even with `dangerous=true`. See `src/bash_mcp/safety.py` for the full regex lists.
+
+Every error response includes `hint` (actionable next step) and `documentation` (path to the skill) — the agent does not need to parse free text to recover.
+
+`cwd` is allowlist-validated: must resolve under `$HOME`, `/tmp`, `/home`, `/mnt/c/Users/jesus`, or `/var/tmp`. Windows-style paths (`C:\foo`) are auto-converted to `/mnt/c/foo`.
+
+## Deploying
+
+`infra/install.sh` deploys everything to a fresh WSL/Windows setup:
+
+- systemd unit → `~/.config/systemd/user/bash-mcp.service`
+- PreToolUse hook → `~/.minimax/agents/mavis/hooks/bash-mcp-redirect.md`
+- Skill → `~/.mavis/skills/bash-mcp/`
+- mcp.json entry → `~/.minimax/mcp/mcp.json`
+
+The script also prints the one `mavis mcp create` command that must be
+run from Windows PowerShell (the runtime registry is Windows-side).
+
+```bash
+./infra/install.sh
+```
 
 ## Operations
 
@@ -108,18 +136,27 @@ tail -f ~/.local/share/bash-mcp/audit.jsonl
 tail -5 ~/.local/share/bash-mcp/audit.jsonl | jq .
 ```
 
+### Health check (no SSH/curl needed)
+
+```bash
+# Inside WSL, call the MCP tool via httpx or any MCP client:
+bash-mcp_status  # via MiniMax Code
+# Or via shell:
+curl http://localhost:54321/mcp/  # then initialize + tools/call bash_mcp_status
+```
+
 ### WSL IP changed (after reboot)
 
 ```bash
 cd /home/jbecerra/projects/bash-mcp
-./update-ip.sh
+./infra/update-ip.sh
 ```
 
 This rewrites only the `bash-mcp` URL in `~/.minimax/mcp/mcp.json` (and `~/.cursor/mcp.json` if present). Does not touch `semantic-memory`.
 
 ### Bootstrap on Windows login
 
-The plan was to extend `semantic-memory-launcher.sh`, but to respect the parallel-infra principle we ship `bash-mcp/launcher.sh` instead. To enable on Windows login:
+The plan was to extend `semantic-memory-launcher.sh`, but to respect the parallel-infra principle we ship `infra/launcher.sh` instead. To enable on Windows login:
 
 ```powershell
 # As admin, register a new Scheduled Task similar to SemanticMemory-WSL-Bootstrap:
@@ -151,11 +188,43 @@ uv run python -m bash_mcp.server --transport streamable-http --host 0.0.0.0 --po
 uv run pytest tests/ -v
 ```
 
-46 tests cover:
-- Hard denylist (one assertion per regex + path exemptions)
-- Soft denylist
-- Safe baseline
-- Executor: echo, exit codes, timeout, env, cwd, error cases
+71 tests cover:
+- 46 parametrized denylist cases (test_safety.py)
+- 27 executor cases including allowlist + Windows→WSL path conversion (test_executor.py)
+- 9 error envelope cases (test_errors.py)
+- 11 e2e tests against the live server (test_e2e.py)
+
+### Project layout
+
+```
+bash-mcp/
+├── AGENTS.md                        # project-scoped rules for future agents
+├── LICENSE                          # MIT
+├── README.md                        # this file
+├── pyproject.toml                   # uv-managed, FastMCP 2.7.0
+├── uv.lock
+├── src/bash_mcp/                    # server code
+│   ├── server.py                    # FastMCP + 6 tools
+│   ├── executor.py                  # subprocess wrapper, timeout, truncation, cwd allowlist
+│   ├── safety.py                    # classify(command)
+│   ├── audit.py                     # JSONL append-only logger
+│   └── discovery.py                 # which / list_binaries (thread-pool)
+├── tests/                           # 71 tests
+└── infra/                           # deployment artifacts
+    ├── install.sh                   # idempotent deploy
+    ├── launcher.sh                  # WSL bootstrap (parallel to semantic-memory-launcher.sh)
+    ├── update-ip.sh                 # refresh WSL IP in mcp.json
+    ├── mcp.json.snippet             # documentation reference
+    ├── systemd/
+    │   └── bash-mcp.service
+    ├── hooks/
+    │   ├── bash-mcp-redirect.md
+    │   └── bash-mcp-redirect.js
+    └── skills/
+        └── bash-mcp/
+            ├── SKILL.md
+            └── _meta.json
+```
 
 ### Add a new tool
 
@@ -179,41 +248,35 @@ def bash_my_new_tool(...) -> dict:
 ```bash
 # Should deny (abort)
 echo '{"input":{"toolName":"bash","toolArgs":{"command":"wsl -d Ubuntu -- bash -c \"echo hi\""}},"output":{}}' \
-  | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/hooks/bash-mcp-redirect.js
+  | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js
 # => {"_abort":{"reason":"..."}}
 
 # Should pass
 echo '{"input":{"toolName":"bash","toolArgs":{"command":"git status"}},"output":{}}' \
-  | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/hooks/bash-mcp-redirect.js
+  | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js
 # => {}
 
 # Should pass (escape hatch)
 echo '{"input":{"toolName":"bash","toolArgs":{"command":"BASH_MCP_SKIP=1 wsl echo"}},"output":{}}' \
-  | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/hooks/bash-mcp-redirect.js
+  | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js
 # => {}
 ```
 
-## Files of interest
+### Deploy to a fresh WSL machine
 
-| Path | Purpose |
-|---|---|
-| `src/bash_mcp/server.py` | FastMCP server + 4 tools |
-| `src/bash_mcp/executor.py` | subprocess wrapper, timeout, truncation |
-| `src/bash_mcp/safety.py` | classify(command) |
-| `src/bash_mcp/audit.py` | JSONL audit logger |
-| `src/bash_mcp/discovery.py` | which / list_binaries |
-| `tests/test_safety.py` | 46 denylist assertions |
-| `tests/test_executor.py` | subprocess behavior |
-| `systemd/bash-mcp.service` | systemd unit (canonical) |
-| `launcher.sh` | WSL bootstrap (parallel to semantic-memory-launcher) |
-| `update-ip.sh` | refresh WSL IP in mcp.json |
-| `hooks/bash-mcp-redirect.js` | Node script invoked by PreToolUse hook |
-| `AGENTS.md` | project-scoped rules for future agents |
+```bash
+git clone <this-repo> /home/jbecerra/projects/bash-mcp
+cd /home/jbecerra/projects/bash-mcp
+./infra/install.sh
+# Then from Windows PowerShell, run the printed `mavis mcp create` command.
+```
 
-## Out of scope (deferred to v2)
+## Out of scope (deferred to v0.3+)
 
-- Stateful sessions with persistent cwd/env across calls.
-- PTY for interactive / streaming commands.
-- Per-call UI confirmation (instead we use the explicit `dangerous` flag).
-- Windows-host command execution (only WSL for now).
-- macOS / other distros (WSL Ubuntu 22.04 only).
+- Audit-log rotation (`audit.jsonl` grows forever; v0.3 will add size-based rotation).
+- `asyncio.Semaphore` for concurrent call limit (v0.3; not needed at single-user scale).
+- Windows Scheduled Task XML for login auto-start.
+- More denylist patterns (review quarterly).
+- Stateful sessions with persistent cwd across calls (v0.4).
+- PTY for streaming/interactive commands (v0.4).
+- Web UI for browsing the audit log (v0.5+).

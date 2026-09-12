@@ -7,11 +7,12 @@ Stateless. Each call spawns a fresh `bash -lc <command>` and waits up to
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -19,6 +20,20 @@ DEFAULT_TIMEOUT_MS = 30_000
 MAX_TIMEOUT_MS = 600_000            # 10 min hard cap
 MAX_OUTPUT_BYTES = 50_000           # truncate stdout/stderr beyond this
 TRUNCATION_DIR = Path("/tmp/bash-mcp")
+
+
+# cwd allowlist — every run_command call's cwd must resolve under one of these.
+# Windows-style paths (C:\foo, D:/bar) are converted to /mnt/<drive>/... before this check.
+ALLOWED_CWD_ROOTS: tuple[str, ...] = (
+    os.path.expanduser("~"),
+    "/tmp",
+    "/home",
+    "/mnt/c/Users/jesus",
+    "/var/tmp",
+)
+
+# Windows drive-letter path: C:, D:, etc., with either \ or / separator.
+_WIN_DRIVE_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
 
 
 @dataclass
@@ -58,6 +73,32 @@ def _resolve_bash() -> str:
     return bash
 
 
+def _convert_windows_path(cwd: str) -> str:
+    """Best-effort Windows-style path → WSL path.
+
+    `C:\\Users\\foo\\bar` → `/mnt/c/Users/foo/bar`
+    `D:/projects`        → `/mnt/d/projects`
+
+    UNC paths, drive-relative paths, and `\\\\wsl$` are returned unchanged
+    so the allowlist check rejects them with a clear message.
+    """
+    m = _WIN_DRIVE_RE.match(cwd)
+    if not m:
+        return cwd
+    drive, rest = m.group(1).lower(), m.group(2)
+    # Normalize separators to forward slashes for the WSL side.
+    rest = rest.replace("\\", "/")
+    return f"/mnt/{drive}/{rest}"
+
+
+def _is_under_allowed_root(cwd: str) -> bool:
+    s = str(cwd)
+    for root in ALLOWED_CWD_ROOTS:
+        if s == root or s.startswith(root + "/"):
+            return True
+    return False
+
+
 def _truncate(s: str, label: str, audit_id: str) -> tuple[str, bool, str | None]:
     """Truncate `s` to MAX_OUTPUT_BYTES. On truncation, save the full copy to disk."""
     if len(s.encode("utf-8")) <= MAX_OUTPUT_BYTES:
@@ -82,8 +123,11 @@ def run(
 
     Raises:
         BashNotFoundError: bash binary missing.
-        InvalidCwdError: cwd does not exist or is not a directory.
-        ValueError: timeout_ms out of range.
+        InvalidCwdError: cwd does not exist, is not a directory, or is not under an
+            allowed root (see ALLOWED_CWD_ROOTS). Windows-style paths like
+            `C:\\Users\\foo` are transparently converted to `/mnt/c/Users/foo`
+            before the allowlist check.
+        ValueError: timeout_ms out of range or empty command.
     """
     if not isinstance(command, str) or not command.strip():
         raise ValueError("command must be a non-empty string")
@@ -96,10 +140,25 @@ def run(
     if cwd is None:
         effective_cwd = os.path.expanduser("~")
     else:
-        effective_cwd = os.path.expanduser(cwd)
+        # Step 1: convert Windows-style paths (C:\foo) to WSL (/mnt/c/foo).
+        effective_cwd = _convert_windows_path(cwd)
+        # Step 2: expand ~ if present.
+        effective_cwd = os.path.expanduser(effective_cwd)
+        # Step 3: if still not absolute (e.g. relative), make it absolute relative to HOME.
         if not os.path.isabs(effective_cwd):
-            effective_cwd = os.path.abspath(effective_cwd)
+            effective_cwd = os.path.abspath(
+                os.path.join(os.path.expanduser("~"), effective_cwd)
+            )
 
+    # Step 4: allowlist check — BEFORE the existence check so we fail fast
+    # with a clear message instead of "No such file or directory".
+    if not _is_under_allowed_root(effective_cwd):
+        raise InvalidCwdError(
+            f"cwd not under an allowed root: {effective_cwd}; "
+            f"allowed: {', '.join(ALLOWED_CWD_ROOTS)}"
+        )
+
+    # Step 5: existence + is_dir check.
     cwd_path = Path(effective_cwd)
     if not cwd_path.exists():
         raise InvalidCwdError(f"cwd does not exist: {effective_cwd}")

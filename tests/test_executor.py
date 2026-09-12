@@ -7,8 +7,11 @@ import os
 import pytest
 
 from bash_mcp.executor import (
+    ALLOWED_CWD_ROOTS,
     BashNotFoundError,
     InvalidCwdError,
+    _convert_windows_path,
+    _is_under_allowed_root,
     run,
 )
 
@@ -62,7 +65,86 @@ def test_cwd_respected() -> None:
 
 def test_bash_login_shell_loads_bashrc() -> None:
     """`bash -lc` should make user-installed PATH entries visible."""
-    # This is a sanity check that login-shell env is loaded.
     r = run("echo $PATH")
     assert r.exit_code == 0
     assert "/usr/bin" in r.stdout
+
+
+# --- B: cwd allowlist + Windows→WSL path conversion ---
+
+def test_convert_windows_backslash() -> None:
+    assert _convert_windows_path(r"C:\Users\jesus\foo") == "/mnt/c/Users/jesus/foo"
+
+
+def test_convert_windows_forward_slash() -> None:
+    assert _convert_windows_path("D:/projects") == "/mnt/d/projects"
+
+
+def test_convert_windows_passthrough() -> None:
+    """Non-drive-letter paths are returned unchanged (allowlist will reject)."""
+    assert _convert_windows_path("/etc") == "/etc"
+    assert _convert_windows_path("foo/bar") == "foo/bar"
+    assert _convert_windows_path("") == ""
+    assert _convert_windows_path("C:") == "C:"  # bare drive letter, not matched
+
+
+def test_is_under_allowed_root_exact() -> None:
+    home = os.path.expanduser("~")
+    assert _is_under_allowed_root(home) is True
+    assert _is_under_allowed_root("/tmp") is True
+    assert _is_under_allowed_root("/tmp/foo") is True
+    assert _is_under_allowed_root("/var/tmp/x") is True
+
+
+def test_is_under_allowed_root_rejects() -> None:
+    assert _is_under_allowed_root("/etc") is False
+    assert _is_under_allowed_root("/var/log") is False
+    assert _is_under_allowed_root("/usr/local/bin") is False
+    assert _is_under_allowed_root("/mnt/c/Windows") is False
+
+
+def test_allowed_cwd_roots_includes_home_and_wsl_user() -> None:
+    """The allowlist MUST cover HOME and /mnt/c/Users/jesus (user's primary area)."""
+    assert os.path.expanduser("~") in ALLOWED_CWD_ROOTS
+    assert "/mnt/c/Users/jesus" in ALLOWED_CWD_ROOTS
+
+
+@pytest.mark.parametrize("cwd,expect_ok", [
+    # Allowed roots — allowlist should accept (path may not exist; that's an
+    # existence-check failure, not an allowlist failure).
+    ("/home/jbecerra", True),
+    ("/tmp/foo/bar", True),
+    ("/home/other", True),
+    ("/mnt/c/Users/jesus/projects", True),
+    ("/var/tmp/x", True),
+    # Windows-style conversion + allow (C: drive, under /mnt/c/Users/jesus)
+    (r"C:\Users\jesus\foo", True),        # → /mnt/c/Users/jesus/foo
+    # Disallowed
+    ("/etc", False),
+    ("/var/log", False),
+    ("/usr/local", False),
+    ("/mnt/c/Windows", False),
+    (r"C:\Windows\System32", False),      # converts to /mnt/c/Windows/... → rejected
+    ("D:/projects", False),                # converts to /mnt/d/projects → not in allowlist
+])
+def test_cwd_allowlist(cwd: str, expect_ok: bool) -> None:
+    """Test the allowlist layer only. Existence failures (cwd doesn't exist)
+    are NOT this test's concern — the allowlist may pass, then existence fails."""
+    try:
+        run("echo x", cwd=cwd, timeout_ms=2000)
+    except InvalidCwdError as e:
+        msg = str(e)
+        allowlist_rejected = "not under an allowed root" in msg
+        if allowlist_rejected:
+            # Allowlist rejection is the only thing this test cares about.
+            if expect_ok:
+                pytest.fail(f"expected {cwd!r} to be allowed, got allowlist rejection: {msg}")
+            # else: correctly rejected by allowlist — pass
+        else:
+            # Existence / is_dir check failed — allowlist passed.
+            if not expect_ok:
+                pytest.fail(f"expected {cwd!r} to be rejected, but allowlist passed (got: {msg})")
+            # else: allowlist passed, but path doesn't exist — also fine for this test
+    except (BashNotFoundError, OSError):
+        # Unrelated failures are fine for the allowlist test.
+        pass

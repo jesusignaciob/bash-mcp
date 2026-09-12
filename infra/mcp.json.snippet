@@ -1,0 +1,10 @@
+{
+  "_comment": "Reference entry to merge into C:\\Users\\jesus\\.minimax\\mcp\\mcp.json. The actual installer (infra/install.sh) does this automatically; this file is documentation only.",
+  "bash-mcp": {
+    "url": "http://<WSL_IP>:54321/mcp/",
+    "type": "streamable-http",
+    "enabled": true,
+    "configured": true,
+    "description": "WSL bash executor — REQUIRED for any WSL command. Tools: run_command, check_env, list_binaries, which. DO NOT use `wsl -d ... -- bash -c \"...\"` from PowerShell — that path has quoting, UTF-16, and PATH bugs. Instead, call bash-mcp_run_command({command: \"...\"}). Safety: denylist + timeouts + output cap; pass dangerous=true to bypass soft denylist."
+  }
+}
