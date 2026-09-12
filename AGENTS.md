@@ -17,19 +17,21 @@ A small MCP server that exposes WSL bash as a structured tool to MiniMax Code. S
 
 ```
 src/bash_mcp/
-├── server.py       # FastMCP server + 6 tools (@mcp.tool)
+├── server.py       # FastMCP server + 10 tools (@mcp.tool) — 6 stateless + 4 session (v0.6)
 ├── executor.py     # subprocess.run wrapper, timeout, truncation, cwd allowlist, concurrency slot
 ├── safety.py       # classify(command) -> Class.{SAFE,DANGEROUS,REJECT}
 ├── audit.py        # JSONL append-only logger + size-based rotation (v0.3)
 ├── discovery.py    # which / list_binaries (thread-pool based)
-└── concurrency.py  # threading.BoundedSemaphore wrapper (v0.3)
+├── concurrency.py  # threading.BoundedSemaphore wrapper (v0.3)
+└── sessions.py     # stateful session registry (cwd + env); process-lifetime (v0.6)
 tests/
-├── test_safety.py            # 46 parametrized denylist cases
+├── test_safety.py            # 115 parametrized denylist cases
 ├── test_executor.py          # 27 cases: subprocess + cwd allowlist + Windows→WSL
 ├── test_errors.py            # 9 cases: error envelope shape + hint text
 ├── test_audit_rotation.py    # 6 cases: rotation + concurrency (v0.3)
 ├── test_concurrency.py       # 5 cases: semaphore behavior (v0.3)
-└── test_e2e.py               # 11 cases: live server round-trip
+├── test_sessions.py          # 51 cases: registry + parsing + 4 tools (v0.6)
+└── test_e2e.py               # 16 cases: live server round-trip (incl. 5 session e2e, v0.6)
 infra/                                  # deployment artifacts (v0.2+)
 ├── install.sh                          # idempotent deploy to fresh WSL/Windows
 ├── launcher.sh                         # WSL bootstrap (parallel to semantic-memory-launcher.sh)
