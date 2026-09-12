@@ -19,6 +19,7 @@ from fastmcp import FastMCP
 
 from bash_mcp import __version__, audit
 from bash_mcp import discovery
+from bash_mcp.concurrency import MAX_CONCURRENT, active as concurrency_active, slot as concurrency_slot
 from bash_mcp.executor import (
     ALLOWED_CWD_ROOTS,
     DEFAULT_TIMEOUT_MS,
@@ -268,10 +269,11 @@ def bash_check_env() -> dict[str, Any]:
     if uv:
         import subprocess
         try:
-            r = subprocess.run(
-                [uv, "--version"],
-                capture_output=True, text=True, timeout=2,
-            )
+            with concurrency_slot():
+                r = subprocess.run(
+                    [uv, "--version"],
+                    capture_output=True, text=True, timeout=2,
+                )
             info["uv_version"] = (r.stdout or r.stderr).strip()
         except Exception:
             pass
@@ -281,10 +283,11 @@ def bash_check_env() -> dict[str, Any]:
     if bash:
         import subprocess
         try:
-            r = subprocess.run(
-                [bash, "--version"],
-                capture_output=True, text=True, timeout=2,
-            )
+            with concurrency_slot():
+                r = subprocess.run(
+                    [bash, "--version"],
+                    capture_output=True, text=True, timeout=2,
+                )
             first = (r.stdout or r.stderr).splitlines()[0] if (r.stdout or r.stderr) else ""
             info["bash_version"] = first
         except Exception:
@@ -371,6 +374,13 @@ def bash_mcp_status() -> dict[str, Any]:
             "path": str(_AUDIT_PATH),
             "entries": audit_entries,
             "size_bytes": audit_size,
+            "max_bytes": audit.MAX_AUDIT_BYTES,
+            "backup_count": audit.BACKUP_COUNT,
+            "backups_present": [p.name for p in audit.backup_paths()],
+        },
+        "concurrency": {
+            "max_concurrent": MAX_CONCURRENT,
+            "active": concurrency_active(),
         },
         "python_version": platform.python_version(),
         "process": {

@@ -1,9 +1,13 @@
-"""Append-only JSONL audit log.
+"""Append-only JSONL audit log with size-based rotation.
 
 Each entry is a single JSON object written in one write() call. On Linux,
 writes smaller than PIPE_BUF (4KB) are atomic, so concurrent appenders
-won't corrupt the file. We never read from this log inside the server —
-it's purely observability.
+won't corrupt the file.
+
+When the file exceeds MAX_AUDIT_BYTES, it is rotated to audit.jsonl.1,
+the previous .1 becomes .2, etc., and the oldest (.BACKUP_COUNT) is deleted.
+Rotation is lazy (happens on the next write after the size threshold is
+crossed) and guarded by a single lock so rotation + append are atomic.
 
 Location: $XDG_DATA_HOME/bash-mcp/audit.jsonl  (default ~/.local/share/bash-mcp/audit.jsonl)
 """
@@ -13,9 +17,19 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
+
+
+# Defaults overridable via env. Module-level so tests can monkeypatch.
+MAX_AUDIT_BYTES: int = int(os.environ.get("BASH_MCP_AUDIT_MAX_BYTES", str(25 * 1024 * 1024)))
+BACKUP_COUNT: int = int(os.environ.get("BASH_MCP_AUDIT_BACKUP_COUNT", "5"))
+
+# Thread-safety: FastMCP runs tools in a thread pool; multiple threads may
+# call log() concurrently. One lock guards both rotation and append.
+_AUDIT_LOCK = threading.Lock()
 
 
 def _audit_path() -> Path:
@@ -27,14 +41,62 @@ def _audit_path() -> Path:
 _AUDIT_FILE: Path | None = None
 
 
-def _ensure_open() -> Path:
+def _ensure_path() -> Path:
+    """Resolve the audit log path, creating the parent dir on first call."""
     global _AUDIT_FILE
-    if _AUDIT_FILE is not None:
-        return _AUDIT_FILE
-    p = _audit_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    _AUDIT_FILE = p
-    return p
+    if _AUDIT_FILE is None:
+        p = _audit_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _AUDIT_FILE = p
+    return _AUDIT_FILE
+
+
+def audit_path() -> Path:
+    """Public accessor for the canonical audit log path."""
+    return _ensure_path()
+
+
+def backup_paths() -> list[Path]:
+    """Return paths of existing backups (audit.jsonl.{1..BACKUP_COUNT}) that currently exist."""
+    p = _ensure_path()
+    out: list[Path] = []
+    for n in range(1, BACKUP_COUNT + 1):
+        b = p.with_suffix(p.suffix + f".{n}")
+        if b.exists():
+            out.append(b)
+    return out
+
+
+def _rotate_if_needed(path: Path) -> None:
+    """Rotate the audit log if it exceeds MAX_AUDIT_BYTES.
+
+    Naming: audit.jsonl -> audit.jsonl.1, .1 -> .2, ..., .N -> deleted.
+    Must be called with _AUDIT_LOCK held.
+
+    If the rename fails (e.g., another writer has the file open on Windows),
+    the OSError propagates to log() which catches it and prints to stderr.
+    The next log() call will retry rotation.
+    """
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return
+    if size < MAX_AUDIT_BYTES:
+        return
+
+    # Drop oldest backup (audit.jsonl.BACKUP_COUNT)
+    oldest = path.with_suffix(path.suffix + f".{BACKUP_COUNT}")
+    if oldest.exists():
+        oldest.unlink()
+    # Shift backups: .N-1 -> .N, ..., .1 -> .2
+    for n in range(BACKUP_COUNT - 1, 0, -1):
+        src = path.with_suffix(path.suffix + f".{n}")
+        if src.exists():
+            dst = path.with_suffix(path.suffix + f".{n + 1}")
+            src.rename(dst)
+    # Current -> .1
+    backup1 = path.with_suffix(path.suffix + ".1")
+    path.rename(backup1)
 
 
 def new_audit_id() -> str:
@@ -42,12 +104,18 @@ def new_audit_id() -> str:
 
 
 def log(entry: dict) -> None:
-    """Append a single audit entry. Fail-soft: any I/O error goes to stderr."""
+    """Append a single audit entry, rotating first if needed.
+
+    Fail-soft: any I/O error goes to stderr (never blocks the tool call).
+    Thread-safe: one global lock guards rotation + append.
+    """
     try:
-        path = _ensure_open()
-        line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
-        with path.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        with _AUDIT_LOCK:
+            path = _ensure_path()
+            _rotate_if_needed(path)
+            line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
     except OSError as e:
         print(f"[bash-mcp audit] WARN: failed to write audit log: {e}", file=sys.stderr)
 
