@@ -99,7 +99,7 @@ def _call_tool(sid: str, name: str, arguments: dict | None = None) -> dict:
 
 
 def test_tools_list(sid: str) -> None:
-    """All 6 tools (5 bash-mcp + echo) should be listed."""
+    """All 10 tools (6 v0.1-v0.3 + 4 v0.6 sessions + echo) should be listed."""
     with httpx.Client(timeout=5.0) as c:
         r = c.post(
             ENDPOINT,
@@ -113,8 +113,18 @@ def test_tools_list(sid: str) -> None:
         assert m
         payload = json.loads(m.group(1))
     names = sorted(t["name"] for t in payload["result"]["tools"])
-    assert names == ["bash_check_env", "bash_list_binaries", "bash_mcp_status",
-                     "bash_run_command", "bash_which", "echo"]
+    assert names == [
+        "bash_check_env",
+        "bash_list_binaries",
+        "bash_mcp_session_create",
+        "bash_mcp_session_destroy",
+        "bash_mcp_session_list",
+        "bash_mcp_session_run",
+        "bash_mcp_status",
+        "bash_run_command",
+        "bash_which",
+        "echo",
+    ]
 
 
 def test_run_command_echo(sid: str) -> None:
@@ -230,6 +240,16 @@ def test_status(sid: str) -> None:
     assert "bash_which" in out["tools"]
     assert "bash_mcp_status" in out["tools"]
     assert "echo" in out["tools"]
+    # v0.6 — session tools + sessions block
+    assert "bash_mcp_session_create" in out["tools"]
+    assert "bash_mcp_session_run" in out["tools"]
+    assert "bash_mcp_session_destroy" in out["tools"]
+    assert "bash_mcp_session_list" in out["tools"]
+    assert "sessions" in out
+    assert isinstance(out["sessions"]["active"], int)
+    assert out["sessions"]["active"] >= 0
+    assert out["sessions"]["max_env_per_session"] >= 1
+    assert out["version"] == "0.6.0"
 
 
 def test_invalid_cwd_returns_hint(sid: str) -> None:
@@ -241,6 +261,166 @@ def test_invalid_cwd_returns_hint(sid: str) -> None:
     assert "hint" in err
     assert "documentation" in err
     assert "allowed roots" in err["hint"].lower()
+
+
+
+
+
+# --- v0.6 session e2e tests ---
+
+
+def test_session_create_run_destroy_e2e(sid: str) -> None:
+    """Full lifecycle: create → run echo → destroy → run returns 404."""
+    created = _call_tool(sid, "bash_mcp_session_create", {"name": "e2e-lifecycle"})
+    session_id = created["session_id"]
+    assert session_id.startswith("s_")
+    assert created["env_count"] == 0
+
+    r = _call_tool(sid, "bash_mcp_session_run", {
+        "session_id": session_id, "command": "echo hello"
+    })
+    assert r["exit_code"] == 0
+    assert r["stdout"].strip() == "hello"
+    assert r["session_id"] == session_id
+    assert "audit_id" in r
+
+    destroyed = _call_tool(sid, "bash_mcp_session_destroy", {"session_id": session_id})
+    assert destroyed.get("ok") is True
+    assert destroyed["session_id"] == session_id
+
+    # Next run must be SESSION_NOT_FOUND.
+    gone = _call_tool(sid, "bash_mcp_session_run", {
+        "session_id": session_id, "command": "echo x"
+    })
+    assert "error" in gone
+    assert gone["error"]["code"] == "SESSION_NOT_FOUND"
+
+
+def test_session_run_persists_cwd_e2e(sid: str) -> None:
+    """`cd /tmp` then `pwd` returns /tmp in two consecutive calls."""
+    created = _call_tool(sid, "bash_mcp_session_create", {
+        "name": "e2e-cwd", "cwd": "/home/jbecerra",
+    })
+    session_id = created["session_id"]
+
+    r1 = _call_tool(sid, "bash_mcp_session_run", {
+        "session_id": session_id, "command": "cd /tmp && pwd"
+    })
+    assert r1["exit_code"] == 0
+    assert "/tmp" in r1["stdout"]
+    assert r1["cwd"] == "/tmp"
+
+    r2 = _call_tool(sid, "bash_mcp_session_run", {
+        "session_id": session_id, "command": "pwd"
+    })
+    assert r2["exit_code"] == 0
+    assert r2["stdout"].strip() == "/tmp"
+    assert r2["cwd"] == "/tmp"
+
+    _call_tool(sid, "bash_mcp_session_destroy", {"session_id": session_id})
+
+
+def test_session_run_persists_env_e2e(sid: str) -> None:
+    """`export X=y` then `echo $X` returns 'y' across calls."""
+    created = _call_tool(sid, "bash_mcp_session_create", {"name": "e2e-env"})
+    session_id = created["session_id"]
+
+    r1 = _call_tool(sid, "bash_mcp_session_run", {
+        "session_id": session_id, "command": "export X=helloworld"
+    })
+    assert r1["exit_code"] == 0
+    assert "X" in r1["env_keys"]
+
+    r2 = _call_tool(sid, "bash_mcp_session_run", {
+        "session_id": session_id, "command": "echo $X"
+    })
+    assert r2["exit_code"] == 0
+    assert r2["stdout"].strip() == "helloworld"
+
+    _call_tool(sid, "bash_mcp_session_destroy", {"session_id": session_id})
+
+
+def test_session_list_e2e(sid: str) -> None:
+    """Create 2 sessions, list, expect 2 entries (or at least our 2)."""
+    a = _call_tool(sid, "bash_mcp_session_create", {"name": "e2e-list-a"})
+    b = _call_tool(sid, "bash_mcp_session_create", {"name": "e2e-list-b"})
+    items = _call_tool(sid, "bash_mcp_session_list")
+    assert isinstance(items, list)
+    ids = {i["session_id"] for i in items}
+    assert a["session_id"] in ids
+    assert b["session_id"] in ids
+    # Cleanup
+    _call_tool(sid, "bash_mcp_session_destroy", {"session_id": a["session_id"]})
+    _call_tool(sid, "bash_mcp_session_destroy", {"session_id": b["session_id"]})
+
+
+def test_session_status_reflects_active_e2e(sid: str) -> None:
+    """bash_mcp_status.sessions.active reports the live count."""
+    before = _call_tool(sid, "bash_mcp_status")
+    assert "sessions" in before
+    assert "active" in before["sessions"]
+    assert "max_env_per_session" in before["sessions"]
+
+    created = _call_tool(sid, "bash_mcp_session_create", {"name": "e2e-status"})
+    try:
+        after = _call_tool(sid, "bash_mcp_status")
+        assert after["sessions"]["active"] >= before["sessions"]["active"] + 1
+    finally:
+        _call_tool(sid, "bash_mcp_session_destroy", {"session_id": created["session_id"]})
+
+
+# Extend test_status to assert the new v0.6 fields.
+# We patch the original test_status rather than add a new one to keep
+# the test surface minimal.
+# (Done below by replacing the existing test_status function.)
+
+
+def _v06_status_old(sid: str) -> None:
+    """bash_mcp_status returns service health + audit stats."""
+    out = _call_tool(sid, "bash_mcp_status")
+    assert out["service"] == "active"
+    assert isinstance(out["version"], str)
+    assert out["uptime_seconds"] >= 0
+    assert isinstance(out["start_time"], str)
+    # Audit stats (v0.2 fields)
+    assert "audit" in out
+    assert isinstance(out["audit"]["entries"], int)
+    assert out["audit"]["entries"] >= 0
+    assert isinstance(out["audit"]["size_bytes"], int)
+    assert out["audit"]["size_bytes"] >= 0
+    # Audit stats (v0.3 fields — rotation)
+    assert "max_bytes" in out["audit"]
+    assert isinstance(out["audit"]["max_bytes"], int)
+    assert out["audit"]["max_bytes"] > 0
+    assert "backup_count" in out["audit"]
+    assert isinstance(out["audit"]["backup_count"], int)
+    assert out["audit"]["backup_count"] >= 1
+    assert "backups_present" in out["audit"]
+    assert isinstance(out["audit"]["backups_present"], list)
+    # Concurrency (v0.3 fields)
+    assert "concurrency" in out
+    assert out["concurrency"]["max_concurrent"] >= 1
+    assert isinstance(out["concurrency"]["active"], int)
+    assert out["concurrency"]["active"] >= 0
+    # Process info
+    assert isinstance(out["process"]["pid"], int)
+    # Tools list (self-reference included)
+    assert "bash_run_command" in out["tools"]
+    assert "bash_check_env" in out["tools"]
+    assert "bash_list_binaries" in out["tools"]
+    assert "bash_which" in out["tools"]
+    assert "bash_mcp_status" in out["tools"]
+    assert "echo" in out["tools"]
+    # v0.6 — session tools + sessions block
+    assert "bash_mcp_session_create" in out["tools"]
+    assert "bash_mcp_session_run" in out["tools"]
+    assert "bash_mcp_session_destroy" in out["tools"]
+    assert "bash_mcp_session_list" in out["tools"]
+    assert "sessions" in out
+    assert isinstance(out["sessions"]["active"], int)
+    assert out["sessions"]["active"] >= 0
+    assert out["sessions"]["max_env_per_session"] >= 1
+    assert out["version"] == "0.6.0"
 
 
 @pytest.fixture

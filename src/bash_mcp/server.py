@@ -17,7 +17,17 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from bash_mcp import __version__, audit
+from bash_mcp import __version__, audit, sessions
+from bash_mcp.sessions import (
+    MAX_SESSION_NAME_LEN,
+    active_count,
+    apply_state_update,
+    create as session_create,
+    destroy as session_destroy,
+    get as session_get,
+    list_active as session_list_active,
+    snapshot_for_run,
+)
 from bash_mcp import discovery
 from bash_mcp.concurrency import MAX_CONCURRENT, active as concurrency_active, slot as concurrency_slot
 from bash_mcp.executor import (
@@ -382,6 +392,10 @@ def bash_mcp_status() -> dict[str, Any]:
             "max_concurrent": MAX_CONCURRENT,
             "active": concurrency_active(),
         },
+        "sessions": {
+            "active": active_count(),
+            "max_env_per_session": sessions.MAX_ENV_VARS,
+        },
         "python_version": platform.python_version(),
         "process": {
             "pid": pid,
@@ -393,9 +407,320 @@ def bash_mcp_status() -> dict[str, Any]:
             "bash_list_binaries",
             "bash_which",
             "bash_mcp_status",
+            "bash_mcp_session_create",
+            "bash_mcp_session_run",
+            "bash_mcp_session_destroy",
+            "bash_mcp_session_list",
             "echo",
         ],
     }
+
+
+
+# --- v0.6: stateful sessions ---
+
+
+@mcp.tool
+def bash_mcp_session_create(
+    name: str | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    """Create a new stateful session.
+
+    Sessions persist `cwd` and exported `env` across calls within the
+    server process. State is LOST on server restart (v0.6 limitation —
+    not persisted to disk). Caller is responsible for `destroy`-ing
+    sessions when done; idle sessions are not auto-cleaned.
+
+    Only top-level `cd` and `export`/`unset` statements on simple
+    command chains are tracked. Shell scripts, functions, conditionals,
+    `$(...)`, backticks, heredocs, multi-line `\\` continuations are
+    out of scope.
+
+    Args:
+        name: Optional human-readable label (≤64 chars). Defaults to
+            `session-<first 8 of id>`.
+        cwd: Optional starting working directory. Must be under an
+            allowed root (same rules as `bash_run_command`). Defaults
+            to `$HOME`.
+
+    Returns:
+        {session_id, name, cwd, created_at, last_used_at, env_count=0}
+        On invalid cwd: {error: {code: INVALID_CWD, ...}}.
+        On bad name:   {error: {code: INVALID_ARGUMENT, ...}}.
+    """
+    audit_id = audit.new_audit_id()
+    try:
+        state = session_create(name=name, cwd=cwd)
+    except InvalidCwdError as e:
+        return make_error_response(
+            code="INVALID_CWD",
+            message=str(e),
+            hint=_hint_for_invalid_cwd(cwd or "$HOME"),
+            audit_id=audit_id,
+        )
+    except ValueError as e:
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message=str(e),
+            hint=f"name must be a string ≤{MAX_SESSION_NAME_LEN} chars.",
+            audit_id=audit_id,
+        )
+
+    audit.log({
+        "ts": audit_id.split("-")[0] if "-" in audit_id else "",
+        "audit_id": audit_id,
+        "tool": "bash_mcp_session_create",
+        "args": {"name": state.name, "cwd": state.cwd},
+        "outcome": "CREATED",
+        "session_id": state.session_id,
+    })
+
+    return {
+        "session_id": state.session_id,
+        "name": state.name,
+        "cwd": state.cwd,
+        "created_at": state.created_at,
+        "last_used_at": state.last_used_at,
+        "env_count": len(state.env),
+        "audit_id": audit_id,
+    }
+
+
+@mcp.tool
+def bash_mcp_session_run(
+    session_id: str,
+    command: str,
+    timeout_ms: int = DEFAULT_TIMEOUT_MS,
+    dangerous: bool = False,
+) -> dict[str, Any]:
+    """Run a command in a session, persisting cwd and env changes.
+
+    Same semantics as `bash_run_command` for:
+      * denylist (HARD always rejected, SOFT needs `dangerous=true`)
+      * concurrency limit (sessions share the global
+        `BASH_MCP_MAX_CONCURRENT`)
+      * timeout / output truncation / audit
+
+    Adds:
+      * runs in `session.cwd` (instead of `$HOME` default)
+      * inherits `session.env` (after `os.environ`)
+      * parses top-level `cd PATH`, `export VAR=value`, `unset VAR` and
+        updates the session after `exit_code == 0`.
+      * returns `cwd` and `env_keys` in the response so callers can
+        confirm state.
+
+    Returns:
+        {stdout, stderr, exit_code, duration_ms, timed_out, truncated,
+         classification, audit_id, session_id, cwd, env_keys}
+        On missing session: {error: {code: SESSION_NOT_FOUND, ...}}.
+    """
+    audit_id = audit.new_audit_id()
+
+    # Step 1: snapshot session cwd + env (under lock, then release).
+    session_cwd, session_env = snapshot_for_run(session_id)
+    if session_env is None:
+        return make_error_response(
+            code="SESSION_NOT_FOUND",
+            message=f"No active session with id '{session_id}'.",
+            hint=(
+                "Create one with bash_mcp_session_create, or list active "
+                "sessions with bash_mcp_session_list. Note that sessions "
+                "are process-lifetime — a server restart wipes them."
+            ),
+            audit_id=audit_id,
+        )
+
+    # Step 2: classify (same rules as bash_run_command).
+    cls: Classification = classify(command)
+    if cls.cls == Class.REJECT:
+        audit.log({
+            "ts": audit_id.split("-")[0] if "-" in audit_id else "",
+            "audit_id": audit_id,
+            "tool": "bash_mcp_session_run",
+            "args": {
+                "session_id": session_id,
+                "command": command,
+                "timeout_ms": timeout_ms,
+                "dangerous": dangerous,
+            },
+            "classification": cls.to_dict(),
+            "outcome": "REJECTED",
+            "reason": "matched hard denylist",
+        })
+        return make_error_response(
+            code="FORBIDDEN_COMMAND",
+            message="Command matches the hard denylist and cannot be executed.",
+            hint=(
+                "This pattern cannot be bypassed even with dangerous=true. "
+                "Modify the command to avoid the dangerous fragment "
+                "(e.g. use /tmp or /home instead of / for rm targets; "
+                "do not pipe curl/wget directly into bash)."
+            ),
+            matched_pattern=cls.matched_pattern,
+            audit_id=audit_id,
+            classification=cls.to_dict(),
+        )
+
+    if cls.cls == Class.DANGEROUS and not dangerous:
+        audit.log({
+            "ts": audit_id.split("-")[0] if "-" in audit_id else "",
+            "audit_id": audit_id,
+            "tool": "bash_mcp_session_run",
+            "args": {
+                "session_id": session_id,
+                "command": command,
+                "timeout_ms": timeout_ms,
+                "dangerous": dangerous,
+            },
+            "classification": cls.to_dict(),
+            "outcome": "DENIED",
+            "reason": "matched soft denylist; dangerous flag not set",
+        })
+        return make_error_response(
+            code="DANGEROUS_COMMAND_REQUIRES_OVERRIDE",
+            message="Command matches the soft denylist and was not authorized.",
+            hint=(
+                "Retry with dangerous=true if this is intentional, OR remove "
+                "the dangerous fragment (e.g. drop sudo, use --no-force, "
+                "drop kill -9)."
+            ),
+            matched_pattern=cls.matched_pattern,
+            audit_id=audit_id,
+            classification=cls.to_dict(),
+        )
+
+    # Step 3: build env — inherit process env + session env + caller env
+    # (caller wins). Same shape as bash_run_command.
+    full_env = os.environ.copy()
+    if session_env:
+        for k, v in session_env.items():
+            full_env[k] = v
+
+    # Step 4: execute via executor.run (which already wraps concurrency.slot()).
+    try:
+        result: ExecutionResult = exec_run(
+            command=command,
+            cwd=session_cwd,
+            timeout_ms=timeout_ms,
+            env=full_env,
+            audit_id=audit_id,
+        )
+    except BashNotFoundError as e:
+        return make_error_response(
+            code="BASH_NOT_FOUND",
+            message=str(e),
+            hint="bash binary not on PATH. Check the WSL environment.",
+            audit_id=audit_id,
+        )
+    except InvalidCwdError as e:
+        return make_error_response(
+            code="INVALID_CWD",
+            message=str(e),
+            hint=_hint_for_invalid_cwd(session_cwd),
+            audit_id=audit_id,
+        )
+    except ValueError as e:
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message=str(e),
+            hint="Check timeout_ms range (1..600000) and that command is non-empty.",
+            audit_id=audit_id,
+        )
+
+    # Step 5: re-snapshot to know if session still exists, then apply cd/export.
+    latest = session_get(session_id)
+    if latest is not None:
+        apply_state_update(session_id, command, result.exit_code)
+        # Re-read after apply for the response (cheap).
+        latest = session_get(session_id)
+
+    # Step 6: audit (same shape as bash_run_command + session_id).
+    audit.log_command(
+        tool="bash_mcp_session_run",
+        args={
+            "session_id": session_id,
+            "command": command,
+            "cwd": session_cwd,
+            "timeout_ms": timeout_ms,
+            "dangerous": dangerous,
+        },
+        classification=cls.to_dict(),
+        exit_code=result.exit_code,
+        duration_ms=result.duration_ms,
+        stdout_bytes=len((result.stdout or "").encode("utf-8")),
+        stderr_bytes=len((result.stderr or "").encode("utf-8")),
+        timed_out=result.timed_out,
+        truncated=result.truncated,
+        audit_id=audit_id,
+    )
+
+    # Step 7: return
+    payload = result.to_dict()
+    payload["classification"] = cls.to_dict()
+    payload["audit_id"] = audit_id
+    payload["session_id"] = session_id
+    if latest is not None:
+        payload["cwd"] = latest.cwd
+        payload["env_keys"] = sorted(latest.env.keys())
+    else:
+        # Destroyed during the run — best-effort fallback.
+        payload["cwd"] = session_cwd
+        payload["env_keys"] = sorted(session_env.keys()) if session_env else []
+    if dangerous and cls.cls == Class.DANGEROUS:
+        payload["warning"] = "Executed with dangerous=true override"
+    return payload
+
+
+@mcp.tool
+def bash_mcp_session_destroy(session_id: str) -> dict[str, Any]:
+    """Destroy a session and free its memory.
+
+    Returns:
+        {ok: true, session_id, freed_env_vars}
+        On missing session: {error: {code: SESSION_NOT_FOUND, ...}}.
+    """
+    audit_id = audit.new_audit_id()
+    # Check existence BEFORE destroy; otherwise a real session with
+    # empty env would be indistinguishable from "never existed".
+    pre = session_get(session_id)
+    if pre is None:
+        return make_error_response(
+            code="SESSION_NOT_FOUND",
+            message=f"No active session with id '{session_id}'.",
+            hint=(
+                "Check bash_mcp_session_list for active session ids. "
+                "Note that sessions are process-lifetime."
+            ),
+            audit_id=audit_id,
+        )
+    freed = session_destroy(session_id)
+
+    audit.log({
+        "ts": audit_id.split("-")[0] if "-" in audit_id else "",
+        "audit_id": audit_id,
+        "tool": "bash_mcp_session_destroy",
+        "args": {"session_id": session_id},
+        "outcome": "DESTROYED",
+        "freed_env_vars": freed,
+    })
+
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "freed_env_vars": freed,
+        "audit_id": audit_id,
+    }
+
+
+@mcp.tool
+def bash_mcp_session_list() -> list[dict[str, Any]]:
+    """List active sessions (id, name, cwd, last_used_at, env_count).
+
+    Returns:
+        Array of session summaries, most-recently-used first.
+    """
+    return session_list_active()
 
 
 def main() -> None:

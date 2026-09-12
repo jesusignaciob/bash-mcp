@@ -25,13 +25,21 @@ Running WSL commands from PowerShell (`wsl -d Ubuntu-22.04 -- bash -lc "..."`) h
 - **`bash_mcp_status` extended** with `audit.{max_bytes, backup_count, backups_present}` and `concurrency.{max_concurrent, active}` fields.
 - 95 tests passing (up from 84).
 
+## What's new in v0.6.0
+
+- **Stateful sessions** — four new tools (`bash-mcp_session_create`, `_run`, `_destroy`, `_list`) keep a server-side `cwd` and accumulated `env` dict across calls. Use them when you need to `cd` somewhere and stay there, or `export` a variable and have it persist for the next call.
+- **Sessions are process-lifetime** — a server restart wipes them. Caller is responsible for `_destroy`. There is no auto-TTL.
+- **Best-effort parser** — top-level `cd PATH`, `export VAR=value`, `unset VAR` are tracked; shell scripts, functions, `$(...)`, heredocs are out of scope (the subprocess still runs correctly, but state isn't persisted from them).
+- **`bash_mcp_status` extended** with `sessions.{active, max_env_per_session}`.
+- 220 tests passing (up from 164).
+
+See [CHANGELOG.md](CHANGELOG.md) for full history.
+
 ## What's new in v0.4.0
 
 - **Quarterly denylist review #1** — 6 new HARD patterns + 4 new SOFT patterns (see Safety table below).
 - **Denylist review history** in `safety.py` documenting all reviews to date (v0.1, v0.2, v0.3, v0.4).
 - 164 tests passing (up from 95).
-
-See [CHANGELOG.md](CHANGELOG.md) for full history.
 
 ## Tools
 
@@ -41,7 +49,11 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
 | `bash-mcp_check_env()` | OS, kernel, Python, uv, PATH entries. |
 | `bash-mcp_list_binaries()` | ~37 well-known tools with `{path, exists, version?}`. |
 | `bash-mcp_which(name)` | Resolve a single binary. |
-| `bash-mcp_status()` | Service health, audit stats + rotation config, concurrency, uptime, tool list. |
+| `bash-mcp_status()` | Service health, audit stats + rotation config, concurrency, sessions, uptime, tool list. |
+| `bash-mcp_session_create(name?, cwd?)` | Create a stateful session; returns a `session_id`. |
+| `bash-mcp_session_run(session_id, command, ...)` | Run a command in a session; persists `cd` / `export` / `unset`. |
+| `bash-mcp_session_destroy(session_id)` | Destroy a session, free memory. |
+| `bash-mcp_session_list()` | List active sessions, most-recently-used first. |
 
 All tools are namespaced as `bash-mcp_*` in MiniMax Code.
 
