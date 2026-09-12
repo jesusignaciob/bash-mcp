@@ -98,3 +98,29 @@ uv run pytest tests/ -v
 3. If they're debugging the hook → test it manually: `echo '<json>' | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js`. Use `BASH_MCP_SKIP=1` prefix for pass-through tests.
 4. If the WSL IP changed → run `./infra/update-ip.sh`.
 5. If the service is down → `systemctl --user status bash-mcp.service`, then `systemctl --user restart bash-mcp.service`.
+
+
+## v0.6 sessions (added 2026-09-12)
+
+Four new tools exposed under `bash-mcp_session_*`:
+
+- `bash_mcp_session_create(name?, cwd?) -> {session_id, ...}`
+- `bash_mcp_session_run(session_id, command, timeout_ms?, dangerous?) -> result`
+- `bash_mcp_session_destroy(session_id) -> {ok, ...}`
+- `bash_mcp_session_list() -> [...]`
+
+Key design points (see `plan.md` for the full discussion):
+
+- **Process-lifetime only** — `dict[str, SessionState]` at module level, guarded by `threading.Lock`. A server restart wipes sessions. There is no auto-TTL.
+- **Per-session env cap** — default 256 vars, configurable via `BASH_MCP_SESSION_MAX_ENV_VARS`. Silently drops new vars past the cap; overwriting existing keys is allowed.
+- **Best-effort parsing** — top-level `cd PATH`, `export VAR=VALUE`, `unset VAR` (chained with `;` / `&&` / `&`) are extracted by regex. Anything more complex (heredocs, `$(...)`, function bodies, multi-line scripts) is intentionally out of scope.
+- **Quoted export values are stored literally** — no shell expansion. `export X="$HOME"` records `$HOME`; the subprocess in the same call still sees the expanded value via `bash -lc`.
+- **Reuses executor.run** — concurrency.slot() and the cwd allowlist apply unchanged. HARD denylist still rejects unconditionally; SOFT requires `dangerous=true`.
+- **Audit integration** — `bash_mcp_session_run` writes the same audit entry shape as `bash_run_command` plus `args.session_id`. Create/destroy write small entries via `audit.log(...)`.
+
+When extending sessions:
+1. Add new logic to `src/bash_mcp/sessions.py`; do not mutate the registry outside this module.
+2. New server tools must call `snapshot_for_run` to clone state under the lock, release the lock, then run `exec_run` (which itself wraps `concurrency.slot()`). Re-acquire the lock after to apply state updates.
+3. Re-check session existence after `exec_run` — destroy-during-run races must no-op, not crash.
+4. Update `bash_mcp_status.tools` list when adding a new tool.
+5. Tests go in `tests/test_sessions.py` (unit, no live server) and `tests/test_e2e.py` (live server).

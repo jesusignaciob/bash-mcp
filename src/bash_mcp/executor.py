@@ -220,3 +220,22 @@ def run(
             truncated=False,
             truncated_full_path=None,
         )
+
+
+
+# Explicit re-export list. v0.6 added the two underscore-prefixed helpers
+# so that `bash_mcp.sessions` can reuse the allowlist + path conversion
+# semantics without copying the logic.
+__all__ = [
+    "ALLOWED_CWD_ROOTS",
+    "DEFAULT_TIMEOUT_MS",
+    "MAX_TIMEOUT_MS",
+    "MAX_OUTPUT_BYTES",
+    "BashNotFoundError",
+    "InvalidCwdError",
+    "ExecutionResult",
+    "run",
+    # v0.6 — re-exported for sessions.py to reuse allowlist semantics:
+    "_convert_windows_path",
+    "_is_under_allowed_root",
+]
