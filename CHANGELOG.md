@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-12
+
+### Added
+
+- **`infra/install.sh --dry-run` flag** — prints what would happen without making changes. Useful for preview before first deploy or after a repo update.
+- **`infra/install.sh -h/--help`** — usage info.
+
+### Fixed (found during end-to-end install.sh test)
+
+- **Hook JS BOM-stripping** (`infra/hooks/bash-mcp-redirect.js`) — when invoked via `wsl -d ... -- node script.js`, the harness's pipe may prepend a UTF-8 BOM. The hook now strips leading BOM and whitespace before `JSON.parse`, so the abort path fires correctly.
+- **Hook MD path** (`~/.minimax/agents/mavis/hooks/bash-mcp-redirect.md`) — was pointing to `/home/jbecerra/projects/bash-mcp/hooks/bash-mcp-redirect.js` (the v0.1 path) instead of `/home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js` (the v0.2 path). Latent bug from v0.2; never triggered because the hook had not been invoked in production. Fixed by re-running `infra/install.sh`.
+- **`install.sh` mcp.json edit step** — `python3 - <<PYEOF` does not expand bash heredoc variables when piping to `python3 -`. Now passes `WSL_IP` and `MCP_JSON` via env vars (`BASH_MCP_MCP_JSON` / `BASH_MCP_WSL_IP`) instead.
+
+### Tests
+
+- 164 passing (unchanged from v0.4).
+- All three hook scenarios verified end-to-end: `wsl ...` (abort), `git status` (pass-through), `BASH_MCP_SKIP=1 wsl` (escape hatch).
+
+### Backwards compatibility
+
+No breaking changes. `--dry-run` is opt-in; default behavior is unchanged.
+
+### Deployment
+
+```bash
+./infra/install.sh --dry-run    # preview first
+./infra/install.sh              # apply
+systemctl --user restart bash-mcp.service
+```
+
 ## [0.4.0] — 2026-09-12
 
 ### Added (quarterly denylist review #1)
