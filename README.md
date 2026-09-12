@@ -25,6 +25,12 @@ Running WSL commands from PowerShell (`wsl -d Ubuntu-22.04 -- bash -lc "..."`) h
 - **`bash_mcp_status` extended** with `audit.{max_bytes, backup_count, backups_present}` and `concurrency.{max_concurrent, active}` fields.
 - 95 tests passing (up from 84).
 
+## What's new in v0.4.0
+
+- **Quarterly denylist review #1** — 6 new HARD patterns + 4 new SOFT patterns (see Safety table below).
+- **Denylist review history** in `safety.py` documenting all reviews to date (v0.1, v0.2, v0.3, v0.4).
+- 164 tests passing (up from 95).
+
 See [CHANGELOG.md](CHANGELOG.md) for full history.
 
 ## Tools
@@ -57,6 +63,7 @@ bash-mcp_run_command({command: "pytest -xvs", cwd: "/home/jbecerra/projects/myap
 
 // Bypass the SOFT denylist
 bash-mcp_run_command({command: "sudo systemctl restart nginx", dangerous: true})
+bash-mcp_run_command({command: "pip uninstall requests", dangerous: true})
 
 // Verify service health (audit + concurrency state)
 bash-mcp_status()
@@ -85,17 +92,32 @@ Streamable-http transport. Stateless per call.
 
 ## Safety
 
-| Class | Trigger | Behavior |
-|---|---|---|
-| `safe` | No denylist match | Execute |
-| `dangerous` | Soft pattern (sudo, kill -9, pip install, etc.) | Reject unless `dangerous=true` |
-| `reject` | Hard pattern (rm -rf /, dd of=/dev/sd*, fork bomb, mkfs) | Always reject |
+Full list lives in `src/bash_mcp/safety.py`. Snapshot:
 
-Hard patterns are never bypassed, even with `dangerous=true`. See `src/bash_mcp/safety.py` for the full regex lists.
+**HARD denylist** (always rejected, cannot be bypassed):
+
+| Category | Patterns |
+|---|---|
+| Block-device destruction | `rm -rf /` (except `/tmp`, `/home`, `/Users`); `dd of=/dev/{sd,hd,nvme,vd}*`; `> /dev/{sd,hd,nvme,vd}*`; `tee /dev/{sd,hd,nvme,vd}*`; `cat\|cp\|mv → /dev/sdX`; `mkfs /dev/*` |
+| Process / system | fork bombs (`:(){ :\|:& };:` + 3 variants); `find ... -delete`; `find ... -exec rm`; `chmod -R NNN /` |
+| Unrecoverable delete | `shred /etc /var /usr /boot /bin /sbin/*` |
+| Supply chain | `curl ... \| bash`; `wget ... \| bash`; `sudo rm` |
+
+**SOFT denylist** (requires `dangerous=true`):
+
+| Category | Patterns |
+|---|---|
+| Privilege / process | `sudo`; `kill -9`; `kill -SIGKILL`; `systemctl stop\|disable\|mask` |
+| System changes | `git push --force` / `-f`; `chown -R`; `chmod NNN /`; `> /etc/` |
+| Package removal (v0.4) | `apt remove\|purge\|autoremove`; `pip uninstall`; `npm uninstall\|rm\|remove -g\|--global` |
+| Package install | `pip install`; `npm install -g`; `apt(-get) install` |
+| Destructive sync (v0.4) | `rsync --delete` |
 
 Every error response includes `hint` (actionable next step) and `documentation` (path to the skill) — the agent does not need to parse free text to recover.
 
 `cwd` is allowlist-validated: must resolve under `$HOME`, `/tmp`, `/home`, `/mnt/c/Users/jesus`, or `/var/tmp`. Windows-style paths (`C:\foo`) are auto-converted to `/mnt/c/foo`.
+
+Denylist is reviewed quarterly. Last review: **v0.4 (2026-09-12)** — see `safety.py` for full history.
 
 ## Configuration
 
@@ -234,13 +256,13 @@ uv run python -m bash_mcp.server --transport streamable-http --host 0.0.0.0 --po
 uv run pytest tests/ -v
 ```
 
-**95 tests** cover:
+**164 tests** cover:
 
-- 46 parametrized denylist cases (test_safety.py)
-- 27 executor cases including allowlist + Windows→WSL path conversion (test_executor.py)
+- 115 safety cases (test_safety.py) — parametrized denylist + safe baselines + review-history
+- 27 executor cases (test_executor.py) — subprocess + cwd allowlist + Windows→WSL
 - 9 error envelope cases (test_errors.py)
-- 6 audit log rotation cases (test_audit_rotation.py) — v0.3
-- 5 concurrency limit cases (test_concurrency.py) — v0.3
+- 6 audit log rotation cases (test_audit_rotation.py)
+- 5 concurrency limit cases (test_concurrency.py)
 - 11 e2e tests against the live server (test_e2e.py)
 
 ### Project layout
@@ -256,16 +278,16 @@ bash-mcp/
 ├── src/bash_mcp/                    # server code
 │   ├── server.py                    # FastMCP + 6 tools
 │   ├── executor.py                  # subprocess wrapper, timeout, truncation, cwd allowlist, concurrency slot
-│   ├── safety.py                    # classify(command)
+│   ├── safety.py                    # classify(command) + quarterly denylist reviews
 │   ├── audit.py                     # JSONL append-only logger + size-based rotation
 │   ├── discovery.py                 # which / list_binaries (thread-pool)
-│   └── concurrency.py               # BoundedSemaphore wrapper (v0.3)
-├── tests/                           # 95 tests
-│   ├── test_safety.py               # 46 parametrized denylist cases
+│   └── concurrency.py               # BoundedSemaphore wrapper
+├── tests/                           # 164 tests
+│   ├── test_safety.py               # 115 parametrized denylist cases
 │   ├── test_executor.py             # 27 subprocess + cwd allowlist
 │   ├── test_errors.py               # 9 error envelope shape + hints
-│   ├── test_audit_rotation.py       # 6 rotation cases (v0.3)
-│   ├── test_concurrency.py          # 5 concurrency limit cases (v0.3)
+│   ├── test_audit_rotation.py       # 6 rotation cases
+│   ├── test_concurrency.py          # 5 concurrency limit cases
 │   └── test_e2e.py                  # 11 live-server round-trips
 └── infra/                           # deployment artifacts
     ├── install.sh                   # idempotent deploy
@@ -307,13 +329,17 @@ with concurrency_slot():
 
 1. Add to `REJECT_PATTERNS` (hard) or `DANGEROUS_PATTERNS` (soft) in `src/bash_mcp/safety.py`.
 2. Add a parametrized test case in `tests/test_safety.py`.
-3. Update `README.md` safety table.
+3. Update `README.md` safety table and the deployed `~/.mavis/skills/bash-mcp/SKILL.md`.
+4. **Add a dated entry to the review-history block** at the top of `safety.py` listing what was added.
+5. `systemctl --user restart bash-mcp.service` so the new pattern is live.
+
+For non-trivial gaps or batch additions, treat it as a quarterly review (see AGENTS.md).
 
 ### Adjust rotation / concurrency limits
 
 - Change the systemd unit (`infra/systemd/bash-mcp.service`), `Environment=BASH_MCP_AUDIT_MAX_BYTES=...`, etc.
 - `systemctl --user daemon-reload && systemctl --user restart bash-mcp.service`
-- Verify via `bash-mcp_status()` that the new values are loaded.
+- Verify via `bash_mcp_status()` that the new values are loaded.
 
 ### Test the hook manually
 
@@ -343,12 +369,14 @@ cd /home/jbecerra/projects/bash-mcp
 # Then from Windows PowerShell, run the printed `mavis mcp create` command.
 ```
 
-## Out of scope (deferred to v0.4+)
+## Out of scope (deferred to v0.5+)
 
-- Stateful sessions with persistent cwd across calls (v0.4).
-- PTY for streaming/interactive commands (v0.4).
-- Web UI for browsing the audit log (v0.5+).
+- Stateful sessions with persistent cwd across calls.
+- PTY for streaming/interactive commands.
+- Web UI for browsing the audit log.
 - Audit log compression with gzip on rotation (if disk > 500 MB).
 - Audit log shipping to external sink (Loki, CloudWatch).
 - Windows Scheduled Task XML for login auto-start (deferred from v0.3).
-- More denylist patterns (review quarterly).
+- Per-project allowlists (`.bash-mcp.toml` in repo root).
+- A "denylist explainer" tool (`bash_mcp_classify("command")`) for the agent.
+- A formal threat-model document.

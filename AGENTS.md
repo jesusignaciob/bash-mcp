@@ -61,7 +61,20 @@ uv run pytest tests/ -v
 ## Conventions for future edits
 
 - **Adding a tool**: register via `@mcp.tool` in `server.py`. Read-only tools don't need audit. Mutating tools should write to `audit.log(...)` and respect `Class.REJECT` (hard floor).
-- **Adding a denylist pattern**: add to `safety.py` AND add a parametrized test case in `tests/test_safety.py`. REJECT patterns cannot be bypassed; DANGEROUS patterns require `dangerous=true`.
+- **Adding a denylist pattern** (incremental change, single pattern):
+  1. Add to `REJECT_PATTERNS` (hard) or `DANGEROUS_PATTERNS` (soft) in `src/bash_mcp/safety.py`.
+  2. Add a parametrized test case in `tests/test_safety.py` (≥3 cases: positive + negative to catch false positives).
+  3. Update the safety table in `README.md` and the deployed `~/.mavis/skills/bash-mcp/SKILL.md` (Safety Model section).
+  4. **Append a dated line** to the review-history block at the top of `safety.py` (see quarterly review below).
+  5. Run tests, then `systemctl --user restart bash-mcp.service` so the new pattern is live.
+
+- **Quarterly denylist review** (batch additions, ~every 90 days):
+  - Open the review-history block at the top of `safety.py`. The previous review is the starting point.
+  - Identify gaps: realistic dangerous commands an agent might emit but that aren't blocked. Categories to scan: block-device destruction, fork bombs + variants, recursive delete via find, package removal, destructive sync, supply-chain attacks.
+  - Add the patterns + tests (same checklist as incremental above).
+  - Append a single dated line to the review-history block summarizing what was added.
+  - Update README + SKILL.md.
+  - Commit as a single release (e.g. `v0.4: quarterly denylist review #1`).
 - **Changing the port**: update BOTH `infra/systemd/bash-mcp.service` `Environment=FASTMCP_SERVER_PORT=` AND `infra/update-ip.sh` `sed` pattern AND `mcp.json` `url` field. Use the [IANA dynamic range](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xml) (49152-65535) to minimize collision risk.
 - **Changing the WSL IP**: run `./infra/update-ip.sh`. It rewrites only the `bash-mcp` URL in `mcp.json` (and Cursor's, if present). Does not touch `semantic-memory` URLs.
 - **Deploying to a fresh WSL/Windows setup**: run `./infra/install.sh`. It idempotently copies the systemd unit, hook, skill, and mcp.json entry, and prints the manual `mavis mcp create` command for Windows PowerShell.
