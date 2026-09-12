@@ -100,7 +100,10 @@ MiniMax Code ──HTTP POST──> bash-mcp server (WSL, port 54321)
                             └─ on size > 25 MB: rotate → audit.jsonl.{1..5}
 ```
 
-Streamable-http transport. Stateless per call.
+Streamable-http transport. `bash-mcp_run_command` is stateless per call; the
+four `bash-mcp_session_*` tools additionally clone + write `cwd` and `env`
+through `src/bash_mcp/sessions.py` (process-lifetime only — see the
+"What's new in v0.6.0" section above).
 
 ## Safety
 
