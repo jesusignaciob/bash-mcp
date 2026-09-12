@@ -27,6 +27,16 @@ from pathlib import Path
 MAX_AUDIT_BYTES: int = int(os.environ.get("BASH_MCP_AUDIT_MAX_BYTES", str(25 * 1024 * 1024)))
 BACKUP_COUNT: int = int(os.environ.get("BASH_MCP_AUDIT_BACKUP_COUNT", "5"))
 
+# v0.7: gzip-on-rotation. When a rotated backup exceeds this size, it
+# is gzipped to .jsonl.N.gz and the plaintext is deleted. Default 0 =
+# disabled (preserves the v0.3 plaintext-only rotation behavior).
+# Decompression is NOT implemented in v0.7; use `zcat audit.jsonl.N.gz`
+# to inspect archived backups.
+DEFAULT_GZIP_THRESHOLD_BYTES: int = 0
+GZIP_THRESHOLD_BYTES: int = int(
+    os.environ.get("BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES", str(DEFAULT_GZIP_THRESHOLD_BYTES))
+)
+
 # Thread-safety: FastMCP runs tools in a thread pool; multiple threads may
 # call log() concurrently. One lock guards both rotation and append.
 _AUDIT_LOCK = threading.Lock()
@@ -57,13 +67,19 @@ def audit_path() -> Path:
 
 
 def backup_paths() -> list[Path]:
-    """Return paths of existing backups (audit.jsonl.{1..BACKUP_COUNT}) that currently exist."""
+    """Return paths of existing backups (.jsonl.N or .jsonl.N.gz).
+
+    v0.7: prefers .gz over plaintext when both exist (gzip supersedes).
+    """
     p = _ensure_path()
     out: list[Path] = []
     for n in range(1, BACKUP_COUNT + 1):
-        b = p.with_suffix(p.suffix + f".{n}")
-        if b.exists():
-            out.append(b)
+        gz = p.with_suffix(p.suffix + f".{n}.gz")
+        pt = p.with_suffix(p.suffix + f".{n}")
+        if gz.exists():
+            out.append(gz)
+        elif pt.exists():
+            out.append(pt)
     return out
 
 
@@ -97,6 +113,58 @@ def _rotate_if_needed(path: Path) -> None:
     # Current -> .1
     backup1 = path.with_suffix(path.suffix + ".1")
     path.rename(backup1)
+
+    # v0.7 gzip pass — opt-in (only runs when GZIP_THRESHOLD_BYTES > 0).
+    # Walks .1..BACKUP_COUNT and gzips any backup whose size exceeds the
+    # threshold. Plaintext is deleted after a successful gzip; on failure
+    # the plaintext is kept (fail-soft).
+    if GZIP_THRESHOLD_BYTES > 0:
+        _gzip_pass(path)
+
+
+def _gzip_pass(path: Path) -> None:
+    """Gzip any plaintext backup whose size exceeds GZIP_THRESHOLD_BYTES.
+
+    Called from _rotate_if_needed with _AUDIT_LOCK held. Uses chunked
+    copy so backups up to tens of MB don't load fully into memory.
+    Failures are isolated per backup: a failed gzip keeps the plaintext
+    and prints a warning to stderr; the rest of the sweep continues.
+    """
+    if GZIP_THRESHOLD_BYTES <= 0:
+        return
+    import gzip  # lazy import — only paid by users who enable gzip
+
+    for n in range(1, BACKUP_COUNT + 1):
+        backup = path.with_suffix(path.suffix + f".{n}")
+        if not backup.exists():
+            continue
+        try:
+            backup_size = backup.stat().st_size
+        except FileNotFoundError:
+            continue
+        if backup_size < GZIP_THRESHOLD_BYTES:
+            continue
+
+        gz_path = backup.with_suffix(backup.suffix + ".gz")
+        try:
+            with backup.open("rb") as f_in, \
+                 gzip.open(gz_path, "wb", compresslevel=6) as f_out:
+                while True:
+                    chunk = f_in.read(64 * 1024)
+                    if not chunk:
+                        break
+                    f_out.write(chunk)
+            backup.unlink()
+        except OSError as e:
+            print(
+                f"[bash-mcp audit] WARN: gzip failed for {backup}: {e}",
+                file=sys.stderr,
+            )
+            if gz_path.exists():
+                try:
+                    gz_path.unlink()
+                except OSError:
+                    pass
 
 
 def new_audit_id() -> str:

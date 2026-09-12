@@ -17,6 +17,9 @@ def temp_audit_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(audit, "_AUDIT_FILE", None)
     monkeypatch.setattr(audit, "MAX_AUDIT_BYTES", 1024)        # 1 KB
     monkeypatch.setattr(audit, "BACKUP_COUNT", 3)
+    # v0.7 compat: explicitly disable gzip so test_audit_gzip.py state
+    # (which may have set GZIP_THRESHOLD_BYTES > 0) does not affect us.
+    monkeypatch.setattr(audit, "GZIP_THRESHOLD_BYTES", 0)
     target = tmp_path / "bash-mcp" / "audit.jsonl"
     target.parent.mkdir(parents=True, exist_ok=True)
     return target
@@ -44,7 +47,7 @@ def test_keeps_only_n_backups(temp_audit_dir):
         audit.log({"i": i, "padding": "x" * 60})
     # BACKUP_COUNT = 3; numbered backups should not exceed 3
     parent = temp_audit_dir.parent
-    backups = list(parent.glob("audit.jsonl.[0-9]*"))
+    backups = list(parent.glob("audit.jsonl.[0-9]"))
     assert len(backups) <= 3
 
 
@@ -54,7 +57,7 @@ def test_rotation_preserves_content(temp_audit_dir):
     for i in range(100):
         audit.log({"i": i})
         all_entries.append(i)
-    files = [temp_audit_dir] + sorted(temp_audit_dir.parent.glob("audit.jsonl.[0-9]*"))
+    files = [temp_audit_dir] + sorted(temp_audit_dir.parent.glob("audit.jsonl.[0-9]"))
     found = []
     for f in files:
         for line in f.read_text().splitlines():
@@ -76,7 +79,7 @@ def test_concurrent_log_does_not_corrupt_json(temp_audit_dir):
         t.join()
 
     # Every line in every audit file must be valid JSON
-    files = [temp_audit_dir] + sorted(temp_audit_dir.parent.glob("audit.jsonl.[0-9]*"))
+    files = [temp_audit_dir] + sorted(temp_audit_dir.parent.glob("audit.jsonl.[0-9]"))
     total_lines = 0
     for f in files:
         for line in f.read_text().splitlines():

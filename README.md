@@ -25,6 +25,16 @@ Running WSL commands from PowerShell (`wsl -d Ubuntu-22.04 -- bash -lc "..."`) h
 - **`bash_mcp_status` extended** with `audit.{max_bytes, backup_count, backups_present}` and `concurrency.{max_concurrent, active}` fields.
 - 95 tests passing (up from 84).
 
+## What's new in v0.7.0
+
+- **`bash_mcp_classify(command)` denylist explainer** — read-only tool that returns `{class, matched_pattern, pattern_index, hint_with_dangerous_false, hint_with_dangerous_true, would_execute, would_execute_with_dangerous_true, audit_id}`. Use BEFORE `bash_run_command` if you're unsure whether a command will be rejected. Saves a round-trip and gives the exact regex that would fire.
+- **Session auto-TTL (opt-in)** — set `BASH_MCP_SESSION_IDLE_TIMEOUT_S` to enable. A daemon janitor evicts sessions whose `last_used_at` is older than the timeout. Each eviction is audited as `tool="bash_mcp_session_destroy" reason="idle_ttl_expired"`. Default 0 = disabled (preserves v0.6 contract).
+- **Audit log gzip-on-rotation (opt-in)** — set `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` to enable. After rotation, any backup larger than the threshold is gzipped to `.jsonl.N.gz` (one-way; use `zcat` to inspect). Default 0 = disabled (preserves v0.3 plaintext-only behavior).
+- **`bash_mcp_status` extended** with `audit.{gzip_threshold_bytes, gzip_enabled}` and `sessions.{idle_timeout_s, janitor_enabled}`.
+- 274 tests passing (up from 220).
+
+All three features are **opt-in via env vars** and default to off, so existing callers see zero behavior change.
+
 ## What's new in v0.6.0
 
 - **Stateful sessions** — four new tools (`bash-mcp_session_create`, `_run`, `_destroy`, `_list`) keep a server-side `cwd` and accumulated `env` dict across calls. Use them when you need to `cd` somewhere and stay there, or `export` a variable and have it persist for the next call.
@@ -54,6 +64,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
 | `bash-mcp_session_run(session_id, command, ...)` | Run a command in a session; persists `cd` / `export` / `unset`. |
 | `bash-mcp_session_destroy(session_id)` | Destroy a session, free memory. |
 | `bash-mcp_session_list()` | List active sessions, most-recently-used first. |
+| `bash-mcp_classify(command)` | Read-only denylist explainer; returns `{class, matched_pattern, hint, would_execute, ...}`. v0.7. |
 
 All tools are namespaced as `bash-mcp_*` in MiniMax Code.
 
@@ -102,8 +113,10 @@ MiniMax Code ──HTTP POST──> bash-mcp server (WSL, port 54321)
 
 Streamable-http transport. `bash-mcp_run_command` is stateless per call; the
 four `bash-mcp_session_*` tools additionally clone + write `cwd` and `env`
-through `src/bash_mcp/sessions.py` (process-lifetime only — see the
-"What's new in v0.6.0" section above).
+through `src/bash_mcp/sessions.py` (process-lifetime only). v0.7 adds a
+daemon janitor thread (opt-in via `BASH_MCP_SESSION_IDLE_TIMEOUT_S`) and
+gzip-on-rotation for the audit log (opt-in via
+`BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES`).
 
 ## Safety
 
@@ -411,7 +424,7 @@ cd /home/jbecerra/projects/bash-mcp
 
 - **Persistent shell state (PTY-based)** — v0.6 sessions are best-effort regex parsing of `cd` / `export` / `unset`. v0.7 could keep a real `bash` process alive per session (via `pexpect` or similar) and track shell variables, aliases, functions, `set -e` / `pipefail`, and job control. Requires a redesign of the session lifecycle and a hard cap on concurrent shells (memory + fd cost).
 - **Disk persistence for sessions** — v0.6 sessions are wiped on server restart. v0.7 could serialize `_SESSIONS` to SQLite or JSON-on-disk and restore on boot, with a migration story for callers that depend on the process-lifetime contract.
-- **Auto-TTL / idle cleanup** — v0.6 requires explicit `_destroy`. v0.7 could add `last_used_at`-based eviction with a configurable idle timeout (`BASH_MCP_SESSION_IDLE_TIMEOUT_S`).
+- ~~**Auto-TTL / idle cleanup**~~ — **shipped in v0.7** (opt-in via `BASH_MCP_SESSION_IDLE_TIMEOUT_S`). See "What's new in v0.7.0".
 - **Session snapshots** (`fork` a session at a point in time) — useful for branching workflows.
 - **Cross-session env sharing** — share a named env dict across multiple sessions.
 - **Web UI for browsing the audit log** — minimal Flask/FastAPI page on a separate port with filters by tool / classification / time.
