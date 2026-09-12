@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-12
+
+### Added
+
+- **`bash_mcp_classify(command)` denylist explainer** (`server.py`) — read-only MCP tool exposing `safety.classify()`. Lets the agent self-check a command before sending it. Returns `{class, matched_pattern, pattern_index, hint_with_dangerous_false, hint_with_dangerous_true, would_execute, would_execute_with_dangerous_true, audit_id}`. Does NOT execute; audited as `tool="bash_mcp_classify"`.
+- **Session auto-TTL / idle eviction** (`sessions.py`, opt-in) — new env var `BASH_MCP_SESSION_IDLE_TIMEOUT_S` (default `0` = disabled). A singleton daemon thread (`_ensure_janitor()` / `_janitor_loop()` / `_evict_idle()`) is started lazily on first `create()` or `apply_state_update()` and evicts sessions whose `last_used_at` is older than the timeout. Sweep interval clamped to `[5, 300]` seconds. Each eviction is audited as `tool="bash_mcp_session_destroy" reason="idle_ttl_expired" freed_env_vars=N`. `bash_mcp_status.sessions` gains `{idle_timeout_s, janitor_enabled}`.
+- **Audit log gzip-on-rotation** (`audit.py`, opt-in) — new env var `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` (default `0` = disabled). After `_rotate_if_needed`, `_gzip_pass()` walks `.1..BACKUP_COUNT` and gzips any backup whose size exceeds the threshold to `.jsonl.N.gz` (chunked copy, lazy `import gzip`). Plaintext deleted on success; kept on failure (fail-soft with stderr warning). `backup_paths()` prefers `.gz` over plaintext when both exist. Decompression is **not** implemented in v0.7 (one-way archival; use `zcat audit.jsonl.N.gz`). `bash_mcp_status.audit` gains `{gzip_threshold_bytes, gzip_enabled}`.
+- **Version bump** — `__version__` in `src/bash_mcp/__init__.py` bumped from `0.6.0` to `0.7.0`.
+
+### Tests
+
+- **274 passing** (up from 220).
+- New `tests/test_classify_tool.py` — 15 unit tests covering class routing, matched_pattern / pattern_index shape, hints, `would_execute` flags, side-effect guarantee (no execution), audit_id presence, and empty-string handling.
+- New `tests/test_sessions_ttl.py` — 20 unit tests covering TTL disabled-by-default, eviction cutoff (inclusive of old, exclusive of recent), audit shape (`reason="idle_ttl_expired"`, `freed_env_vars`, `session_id`), janitor thread lifecycle, sweep interval clamping (`[5, 300]`), sweep warning on failure, status surface, and concurrent `_evict_idle` idempotence.
+- New `tests/test_audit_gzip.py` — 14 unit tests reusing the `temp_audit_dir` fixture from `test_audit_rotation.py`. Covers disabled-by-default, threshold-zero, threshold-above/skip, .gz suffix replacement, gzip magic bytes (`1f 8b`), roundtrip via `gzip.open`, env-configurable threshold, oldest-first compression, fail-soft behavior (plaintext survives + stderr warning), and status surface.
+- `tests/test_e2e.py` — 5 new live-server tests (`test_classify_e2e_safe_command`, `_dangerous_command`, `_reject_command`, `_does_not_execute`, `test_session_ttl_status_reflects_default_e2e`). Existing `test_status` and `test_tools_list` updated for v0.7 fields and 11-tool toolset.
+
+### Backwards compatibility
+
+- **All three features default to off** (env vars set to `0`). Existing callers see zero behavior change.
+- `bash_run_command`, `bash_check_env`, `bash_list_binaries`, `bash_which`, `bash_mcp_status`, `bash_mcp_session_create/run/destroy/list`, `echo` — unchanged. The 6 stateless + 4 session tools from v0.6 are byte-identical.
+- Audit log format unchanged. `audit.jsonl` continues to be plaintext JSONL; only opt-in `.gz` files are added for backups.
+- Session contract unchanged. v0.6's "process-lifetime, explicit destroy" promise is the default.
+
+### Compatibility notes for ops
+
+- **`audit.jsonl.{N}.gz`** — if you set `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES > 0`, plaintext `.N` files become `.N.gz` after rotation. Any external log shipper that expects plaintext must use `zcat` or be updated to handle gzip. Decompression on read is **not** implemented in v0.7.
+- **`BASH_MCP_SESSION_IDLE_TIMEOUT_S`** — once set, sessions will be silently evicted on the next janitor sweep past their idle window. Set this only if your callers can tolerate silent session destruction; otherwise keep at `0` (v0.6 default).
+- **Janitor thread** — one daemon thread (`bash-mcp-session-janitor`) is started lazily. Memory cost is negligible (~8 MB stack). The thread dies with the process.
+
+### Deployment
+
+```bash
+cd /home/jbecerra/projects/bash-mcp
+git pull            # or this commit, once pushed
+systemctl --user restart bash-mcp.service   # picks up the new bash_mcp_classify tool
+
+# Opt-in to v0.7 features (defaults stay off):
+export BASH_MCP_SESSION_IDLE_TIMEOUT_S=300        # evict idle sessions after 5 min
+export BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES=5242880  # gzip backups > 5 MB
+# Then restart the service.
+```
+
+Verify:
+```bash
+curl http://127.0.0.1:54321/mcp/ ...   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash_mcp_classify","arguments":{"command":"sudo apt update"}}}'
+# -> { "class": "dangerous", "would_execute": false, "would_execute_with_dangerous_true": true, ... }
+```
+
 ## [0.6.0] — 2026-09-12
 
 ### Added

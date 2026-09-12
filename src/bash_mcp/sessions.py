@@ -123,9 +123,22 @@ class SessionState:
 _SESSIONS: dict[str, SessionState] = {}
 _LOCK = threading.Lock()
 
+# Janitor thread (v0.7). Singleton daemon started lazily on the
+# first create() / apply_state_update() when IDLE_TIMEOUT_S > 0.
+_JANITOR_STARTED = False
+_JANITOR_LOCK = threading.Lock()
+
 # Configurable cap (read once at import; tests may mutate directly).
 MAX_ENV_VARS: int = int(
     os.environ.get("BASH_MCP_SESSION_MAX_ENV_VARS", str(DEFAULT_MAX_ENV_VARS))
+)
+
+# v0.7: session auto-TTL / idle eviction. When > 0, a daemon
+# janitor thread periodically evicts sessions whose last_used_at is
+# v0.6 "process-lifetime, explicit destroy" contract).
+DEFAULT_IDLE_TIMEOUT_S: int = 0
+IDLE_TIMEOUT_S: int = int(
+    os.environ.get("BASH_MCP_SESSION_IDLE_TIMEOUT_S", str(DEFAULT_IDLE_TIMEOUT_S))
 )
 
 
@@ -136,6 +149,106 @@ def _new_session_id() -> str:
 
 def _new_default_name(session_id: str) -> str:
     return f"session-{session_id[len(SESSION_ID_PREFIX):][:8]}"
+
+
+def _janitor_sweep_interval_s() -> int:
+    """Compute the janitor sweep interval.
+
+    Sleeps IDLE_TIMEOUT_S // 4 between sweeps, clamped to [5, 300] seconds
+    so we never busy-loop (very small timeout) or sleep too long (very
+    large timeout).
+    """
+    base = IDLE_TIMEOUT_S // 4
+    if base <= 0:
+        base = 5
+    return max(5, min(300, base))
+
+
+def _ensure_janitor() -> None:
+    """Start the eviction janitor if idle TTL is enabled.
+
+    Idempotent — safe to call from every create() and apply_state_update().
+    The thread is daemon so it dies with the process.
+    """
+    global _JANITOR_STARTED
+    if IDLE_TIMEOUT_S <= 0 or _JANITOR_STARTED:
+        return
+    with _JANITOR_LOCK:
+        if _JANITOR_STARTED:
+            return
+        _JANITOR_STARTED = True
+        sweep_s = _janitor_sweep_interval_s()
+        t = threading.Thread(
+            target=_janitor_loop,
+            args=(sweep_s,),
+            name="bash-mcp-session-janitor",
+            daemon=True,
+        )
+        t.start()
+
+
+def _janitor_loop(sweep_s: int) -> None:
+    """Forever-running daemon body. Sleeps, then sweeps, then repeats."""
+    import sys  # local import to keep module top-level clean
+    while True:
+        # Sleep first so a server that starts + immediately shuts down
+        # doesn't have to do any sweeps.
+        time.sleep(sweep_s)
+        try:
+            _evict_idle()
+        except Exception as e:  # noqa: BLE001 — best-effort janitor
+            print(
+                f"[bash-mcp sessions] WARN: janitor sweep failed: {e}",
+                file=sys.stderr,
+            )
+
+
+def _evict_idle() -> int:
+    """Evict sessions whose last_used_at is older than IDLE_TIMEOUT_S.
+
+    Returns the number of sessions evicted. Safe to call directly from
+    tests (no daemon thread needed — tests reset _JANITOR_STARTED).
+    Audits each eviction under tool="bash_mcp_session_destroy".
+    """
+    if IDLE_TIMEOUT_S <= 0:
+        return 0
+    cutoff = time.time() - IDLE_TIMEOUT_S
+    evicted: list[tuple[str, int]] = []  # (session_id, env_count)
+
+    with _LOCK:
+        stale = [
+            sid for sid, s in _SESSIONS.items()
+            if s.last_used_at < cutoff
+        ]
+        for sid in stale:
+            state = _SESSIONS.pop(sid, None)
+            if state is not None:
+                evicted.append((sid, len(state.env)))
+
+    # Audit each eviction OUTSIDE the lock. Audit is best-effort: a
+    # broken audit log does NOT block the eviction itself.
+    for sid, freed in evicted:
+        try:
+            from bash_mcp import audit  # local import: avoid cycles at import time
+            audit.log({
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "audit_id": f"ttl-{uuid.uuid4().hex[:8]}",
+                "tool": "bash_mcp_session_destroy",
+                "args": {"session_id": sid},
+                "outcome": "DESTROYED",
+                "reason": "idle_ttl_expired",
+                "freed_env_vars": freed,
+            })
+        except Exception:
+            pass  # audit is best-effort
+
+    return len(evicted)
+
+
+def _reset_janitor() -> None:
+    """Test helper: mark the janitor as not-started so tests can re-init."""
+    global _JANITOR_STARTED
+    _JANITOR_STARTED = False
 
 
 def _resolve_cwd(cwd: str | None) -> str:
@@ -231,6 +344,7 @@ def create(name: str | None = None, cwd: str | None = None) -> SessionState:
     with _LOCK:
         _SESSIONS[session_id] = state
 
+    _ensure_janitor()
     return state
 
 
@@ -304,6 +418,8 @@ def apply_state_update(
             state = _SESSIONS.get(session_id)
             if state is not None:
                 state.last_used_at = time.time()
+        # Outside the lock — janitor thread startup is idempotent.
+        _ensure_janitor()
         return
 
     with _LOCK:
@@ -335,3 +451,9 @@ def apply_state_update(
             state.env.pop(name, None)
 
         state.last_used_at = time.time()
+
+    # Outside the lock — janitor thread startup is idempotent.
+    _ensure_janitor()
+
+    # Outside the lock — janitor thread startup is idempotent.
+    _ensure_janitor()

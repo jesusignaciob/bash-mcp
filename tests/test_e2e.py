@@ -116,6 +116,7 @@ def test_tools_list(sid: str) -> None:
     assert names == [
         "bash_check_env",
         "bash_list_binaries",
+        "bash_mcp_classify",
         "bash_mcp_session_create",
         "bash_mcp_session_destroy",
         "bash_mcp_session_list",
@@ -249,7 +250,7 @@ def test_status(sid: str) -> None:
     assert isinstance(out["sessions"]["active"], int)
     assert out["sessions"]["active"] >= 0
     assert out["sessions"]["max_env_per_session"] >= 1
-    assert out["version"] == "0.6.0"
+    assert out["version"] == "0.7.0"
 
 
 def test_invalid_cwd_returns_hint(sid: str) -> None:
@@ -420,8 +421,73 @@ def _v06_status_old(sid: str) -> None:
     assert isinstance(out["sessions"]["active"], int)
     assert out["sessions"]["active"] >= 0
     assert out["sessions"]["max_env_per_session"] >= 1
-    assert out["version"] == "0.6.0"
+    assert out["version"] == "0.7.0"
 
+
+
+
+# --- v0.7 e2e tests ---
+
+
+def test_classify_e2e_safe_command(sid: str) -> None:
+    """bash_mcp_classify on a benign command returns class='safe'."""
+    out = _call_tool(sid, "bash_mcp_classify", {"command": "echo hi"})
+    assert out["class"] == "safe"
+    assert out["would_execute"] is True
+    assert out["matched_pattern"] is None
+
+
+def test_classify_e2e_dangerous_command(sid: str) -> None:
+    """bash_mcp_classify on a dangerous command returns class='dangerous'
+    with would_execute_with_dangerous_true=True."""
+    out = _call_tool(sid, "bash_mcp_classify", {"command": "sudo apt update"})
+    assert out["class"] == "dangerous"
+    assert out["would_execute"] is False
+    assert out["would_execute_with_dangerous_true"] is True
+    assert "dangerous=true" in out["hint_with_dangerous_false"]
+
+
+def test_classify_e2e_reject_command(sid: str) -> None:
+    """bash_mcp_classify on rm -rf / returns class='reject' even with override."""
+    out = _call_tool(sid, "bash_mcp_classify", {"command": "rm -rf /"})
+    assert out["class"] == "reject"
+    assert out["would_execute"] is False
+    assert out["would_execute_with_dangerous_true"] is False  # HARD cannot be bypassed
+    assert "rm" in (out["matched_pattern"] or "")
+
+
+def test_classify_e2e_does_not_execute(sid: str) -> None:
+    """After classify('touch /tmp/pwned-by-classify'), the marker must NOT exist."""
+    marker = "/tmp/pwned-by-classify-e2e-marker"
+    # Clean any prior state.
+    try:
+        os.unlink(marker)
+    except FileNotFoundError:
+        pass
+    out = _call_tool(sid, "bash_mcp_classify", {"command": f"touch {marker}"})
+    assert "class" in out
+    # Verify marker was not created.
+    assert not os.path.exists(marker), (
+        f"bash_mcp_classify must not execute, but {marker} was created"
+    )
+
+
+def test_session_ttl_status_reflects_default_e2e(sid: str) -> None:
+    """The default live server has IDLE_TIMEOUT_S=0 (janitor disabled).
+
+    Tests don't actually exercise eviction live (would require restarting
+    the server with BASH_MCP_SESSION_IDLE_TIMEOUT_S=1 set — out of scope
+    for a single-process test). We just verify the status surface.
+    """
+    import time
+    time.sleep(0.5)  # let any startup writes settle
+    status = _call_tool(sid, "bash_mcp_status")
+    assert "sessions" in status
+    assert "idle_timeout_s" in status["sessions"]
+    assert status["sessions"]["janitor_enabled"] is False
+
+
+import os  # for test_classify_e2e_does_not_execute
 
 @pytest.fixture
 def sid() -> str:

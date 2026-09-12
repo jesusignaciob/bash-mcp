@@ -17,21 +17,24 @@ A small MCP server that exposes WSL bash as a structured tool to MiniMax Code. S
 
 ```
 src/bash_mcp/
-├── server.py       # FastMCP server + 10 tools (@mcp.tool) — 6 stateless + 4 session (v0.6)
+├── server.py       # FastMCP server + 11 tools (@mcp.tool) — 6 stateless + 4 session + 1 classify (v0.6/v0.7)
 ├── executor.py     # subprocess.run wrapper, timeout, truncation, cwd allowlist, concurrency slot
 ├── safety.py       # classify(command) -> Class.{SAFE,DANGEROUS,REJECT}
-├── audit.py        # JSONL append-only logger + size-based rotation (v0.3)
+├── audit.py        # JSONL append-only logger + size-based rotation (v0.3) + opt-in gzip-on-rotation (v0.7)
 ├── discovery.py    # which / list_binaries (thread-pool based)
 ├── concurrency.py  # threading.BoundedSemaphore wrapper (v0.3)
-└── sessions.py     # stateful session registry (cwd + env); process-lifetime (v0.6)
+└── sessions.py     # stateful session registry (cwd + env); process-lifetime (v0.6) + opt-in auto-TTL janitor (v0.7)
 tests/
 ├── test_safety.py            # 115 parametrized denylist cases
 ├── test_executor.py          # 27 cases: subprocess + cwd allowlist + Windows→WSL
 ├── test_errors.py            # 9 cases: error envelope shape + hint text
 ├── test_audit_rotation.py    # 6 cases: rotation + concurrency (v0.3)
 ├── test_concurrency.py       # 5 cases: semaphore behavior (v0.3)
+├── test_classify_tool.py     # 15 cases: explainer tool (v0.7)
+├── test_sessions_ttl.py      # 20 cases: auto-TTL / janitor (v0.7)
+├── test_audit_gzip.py        # 14 cases: gzip-on-rotation (v0.7)
 ├── test_sessions.py          # 51 cases: registry + parsing + 4 tools (v0.6)
-└── test_e2e.py               # 16 cases: live server round-trip (incl. 5 session e2e, v0.6)
+└── test_e2e.py               # 21 cases: live server round-trip (incl. 5 session e2e + 5 classify e2e)
 infra/                                  # deployment artifacts (v0.2+)
 ├── install.sh                          # idempotent deploy to fresh WSL/Windows
 ├── launcher.sh                         # WSL bootstrap (parallel to semantic-memory-launcher.sh)
@@ -126,3 +129,46 @@ When extending sessions:
 3. Re-check session existence after `exec_run` — destroy-during-run races must no-op, not crash.
 4. Update `bash_mcp_status.tools` list when adding a new tool.
 5. Tests go in `tests/test_sessions.py` (unit, no live server) and `tests/test_e2e.py` (live server).
+
+
+## v0.7 (added 2026-09-12)
+
+Three **opt-in** additive features. All three default to off via env vars; existing callers see zero behavior change.
+
+### bash_mcp_classify
+
+Pure wrapper around `safety.classify()`. Read-only. Lets the agent self-check a command before sending it. Returns `{class, matched_pattern, pattern_index, hint_with_dangerous_false, hint_with_dangerous_true, would_execute, would_execute_with_dangerous_true, audit_id}`. Audited as `tool="bash_mcp_classify"` (no subprocess).
+
+### Session auto-TTL
+
+- New env var: `BASH_MCP_SESSION_IDLE_TIMEOUT_S` (default 0 = disabled).
+- Singleton daemon thread started lazily on first `create()` or `apply_state_update()`.
+- Sweep interval: `max(5, min(300, timeout // 4))` seconds.
+- Each eviction: `tool="bash_mcp_session_destroy" reason="idle_ttl_expired" freed_env_vars=N`.
+- Lock: `_JANITOR_LOCK` (separate from `_LOCK`) for thread startup; evictions go through the existing `_LOCK`.
+- `bash_mcp_status.sessions` gains `{idle_timeout_s, janitor_enabled}`.
+
+### Audit log gzip-on-rotation
+
+- New env var: `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` (default 0 = disabled).
+- After `_rotate_if_needed`, walks `.1..BACKUP_COUNT` and gzips any backup exceeding the threshold. Plaintext deleted on success; kept on failure (fail-soft with stderr warning).
+- `import gzip` is lazy inside `_gzip_pass` so non-users don't pay the import cost.
+- `backup_paths()` prefers `.gz` over plaintext when both exist (gz supersedes).
+- Decompression is **not** implemented in v0.7 — one-way archival; use `zcat audit.jsonl.N.gz`.
+- `bash_mcp_status.audit` gains `{gzip_threshold_bytes, gzip_enabled}`.
+
+### v0.7 test layout
+
+- `test_classify_tool.py` (15) — unit, no live server.
+- `test_sessions_ttl.py` (20) — unit, calls `_evict_idle()` directly for determinism.
+- `test_audit_gzip.py` (14) — unit, uses the `temp_audit_dir` fixture pattern.
+- `test_e2e.py` (+5) — live-server round-trip for the new tool + status surface.
+
+### When extending opt-in features
+
+Pattern (all three follow it):
+1. New module-level constant: `<NAME>: int = int(os.environ.get("<ENV_VAR>", str(DEFAULT)))`.
+2. Default `DEFAULT = 0` = disabled (preserves prior contract).
+3. Behavior guarded by `if <NAME> > 0:`.
+4. `bash_mcp_status` surfaces the constant + a `_enabled` flag.
+5. Document the env var + semantics in SKILL.md and CHANGELOG.

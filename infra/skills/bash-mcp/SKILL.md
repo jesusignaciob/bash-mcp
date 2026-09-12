@@ -1,13 +1,13 @@
 ---
 name: bash-mcp
-description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6)."
+description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6)."
 license: MIT
 metadata:
-  version: "1.6"
+  version: "1.7"
   category: tools
 ---
 
-# bash-mcp — WSL Bash Executor (v0.6)
+# bash-mcp — WSL Bash Executor (v0.7)
 
 The **REQUIRED** way to run WSL bash commands from this agent. Replaces the old `wsl -d Ubuntu-22.04 -- bash -lc "..."` pattern.
 
@@ -57,7 +57,13 @@ Resolves a single binary. Returns `{name, path, exists, version?}`. Use for tool
 
 ### `bash_mcp_status()`
 
-Read-only health check. Returns `{service, version, uptime_seconds, start_time, audit: {path, entries, size_bytes, max_bytes, backup_count, backups_present}, concurrency: {max_concurrent, active}, sessions: {active, max_env_per_session}, python_version, process: {pid, rss_bytes}, tools: [...]}`. Use this to verify the service is up without SSH/tail logs.
+Read-only health check. Returns `{service, version, uptime_seconds, start_time, audit: {path, entries, size_bytes, max_bytes, backup_count, backups_present, gzip_threshold_bytes, gzip_enabled}, concurrency: {max_concurrent, active}, sessions: {active, max_env_per_session, idle_timeout_s, janitor_enabled}, python_version, process: {pid, rss_bytes}, tools: [...]}`. Use this to verify the service is up without SSH/tail logs.
+
+### `bash-mcp_classify(command) → {...}` (v0.7)
+
+Read-only denylist explainer. Does NOT execute. Use BEFORE `bash_run_command` if you're unsure whether a command will be rejected — saves a round-trip and gives you the exact regex + pattern that would fire.
+
+Returns `{class, matched_pattern, pattern_index, hint_with_dangerous_false, hint_with_dangerous_true, would_execute, would_execute_with_dangerous_true, audit_id}` where `class ∈ {"safe", "dangerous", "reject"}`. Each call is audited as `tool="bash_mcp_classify"`.
 
 ## Stateful Sessions (v0.6)
 
@@ -176,6 +182,8 @@ If you intend one of these, **call `bash-mcp_run_command` with `dangerous: true`
 - Max 8 concurrent subprocesses; excess calls queue. Configurable via `BASH_MCP_MAX_CONCURRENT`.
 - Env values are NOT logged (only env keys).
 - v0.6 sessions: per-session env dict is capped at 256 vars (configurable via `BASH_MCP_SESSION_MAX_ENV_VARS`). Sessions are process-lifetime — a restart wipes them. Caller must `bash_mcp_session_destroy` to free memory.
+- v0.7 session auto-TTL (opt-in): set `BASH_MCP_SESSION_IDLE_TIMEOUT_S` to enable. A daemon janitor evicts sessions whose `last_used_at` is older than the timeout. Each eviction is audited as `tool="bash_mcp_session_destroy" reason="idle_ttl_expired"`. Sweep interval is `max(5, min(300, timeout // 4))` seconds. Default 0 = disabled (preserves v0.6 contract).
+- v0.7 audit gzip-on-rotation (opt-in): set `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` to enable. After rotation, any backup larger than the threshold is gzipped to `.jsonl.N.gz` (one-way; use `zcat` to inspect). Default 0 = disabled (preserves v0.3 plaintext-only behavior).
 
 ## Common Patterns
 

@@ -38,7 +38,7 @@ from bash_mcp.executor import (
     InvalidCwdError,
     run as exec_run,
 )
-from bash_mcp.safety import Class, Classification, classify
+from bash_mcp.safety import Class, Classification, classify  # classify is also exposed as a tool
 
 mcp = FastMCP("bash-mcp")
 
@@ -387,6 +387,8 @@ def bash_mcp_status() -> dict[str, Any]:
             "max_bytes": audit.MAX_AUDIT_BYTES,
             "backup_count": audit.BACKUP_COUNT,
             "backups_present": [p.name for p in audit.backup_paths()],
+            "gzip_threshold_bytes": audit.GZIP_THRESHOLD_BYTES,
+            "gzip_enabled": audit.GZIP_THRESHOLD_BYTES > 0,
         },
         "concurrency": {
             "max_concurrent": MAX_CONCURRENT,
@@ -395,6 +397,8 @@ def bash_mcp_status() -> dict[str, Any]:
         "sessions": {
             "active": active_count(),
             "max_env_per_session": sessions.MAX_ENV_VARS,
+            "idle_timeout_s": sessions.IDLE_TIMEOUT_S,
+            "janitor_enabled": sessions.IDLE_TIMEOUT_S > 0,
         },
         "python_version": platform.python_version(),
         "process": {
@@ -407,6 +411,7 @@ def bash_mcp_status() -> dict[str, Any]:
             "bash_list_binaries",
             "bash_which",
             "bash_mcp_status",
+            "bash_mcp_classify",
             "bash_mcp_session_create",
             "bash_mcp_session_run",
             "bash_mcp_session_destroy",
@@ -415,6 +420,82 @@ def bash_mcp_status() -> dict[str, Any]:
         ],
     }
 
+
+
+# --- v0.7: denylist explainer ---
+
+
+def _hint_for_class(cls_value: str, dangerous: bool) -> str:
+    """Build the explainer hint for a classification + dangerous flag.
+
+    Mirrors the strings used in bash_run_command / bash_mcp_session_run
+    so the explainer matches what would actually happen.
+    """
+    if cls_value == Class.SAFE.value:
+        return "Command would execute without override."
+    if cls_value == Class.REJECT.value:
+        return (
+            "This pattern cannot be bypassed even with dangerous=true. "
+            "Modify the command to avoid the dangerous fragment "
+            "(e.g. use /tmp or /home instead of / for rm targets; "
+            "do not pipe curl/wget directly into bash)."
+        )
+    if cls_value == Class.DANGEROUS.value:
+        return (
+            "Retry bash_run_command with dangerous=true if this is intentional, "
+            "OR remove the dangerous fragment (e.g. drop sudo, use --no-force, "
+            "drop kill -9)."
+        )
+    return ""
+
+
+@mcp.tool
+def bash_mcp_classify(command: str) -> dict[str, Any]:
+    """Classify a command string against the bash-mcp denylist.
+
+    Read-only. Does NOT execute. Use this BEFORE bash_run_command if you're
+    unsure whether a command will be rejected. Saves a round-trip and gives
+    you the exact rule that would fire.
+
+    Args:
+        command: The bash command line to classify.
+
+    Returns:
+        {class, matched_pattern, pattern_index,
+         hint_with_dangerous_false, hint_with_dangerous_true,
+         would_execute, would_execute_with_dangerous_true, audit_id}
+
+        * class            in {"safe", "dangerous", "reject"}
+        * matched_pattern  = the regex string that fired (null if safe)
+        * pattern_index    = 0-based index in REJECT/DANGEROUS list (null if safe)
+        * hint_with_dangerous_false / ..._true
+                          = actionable next-step strings (one per scenario)
+        * would_execute    = true iff class == "safe"
+        * would_execute_with_dangerous_true
+                          = true iff class != "reject" (i.e. dangerous still
+                            rejected without override, but accepted WITH override)
+        * audit_id         = id of the audit entry written for this call
+    """
+    audit_id = audit.new_audit_id()
+    cls: Classification = classify(command)
+    audit.log({
+        "ts": audit_id.split("-")[0] if "-" in audit_id else "",
+        "audit_id": audit_id,
+        "tool": "bash_mcp_classify",
+        "args": {"command": command, "command_len": len(command)},
+        "classification": cls.to_dict(),
+        "outcome": "CLASSIFIED",
+    })
+    return {
+        "class": cls.cls.value,
+        "matched_pattern": cls.matched_pattern,
+        "pattern_index": cls.pattern_index,
+        "hint_with_dangerous_false": _hint_for_class(cls.cls.value, dangerous=False),
+        "hint_with_dangerous_true":  _hint_for_class(cls.cls.value, dangerous=True),
+        "would_execute": cls.cls == Class.SAFE,
+        "would_execute_with_dangerous_true": cls.cls != Class.REJECT,
+        "audit_id": audit_id,
+    }
 
 
 # --- v0.6: stateful sessions ---
