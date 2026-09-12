@@ -413,23 +413,23 @@ cd /home/jbecerra/projects/bash-mcp
 # Then from Windows PowerShell, run the printed `mavis mcp create` command.
 ```
 
-## Out of scope (deferred to v0.7+)
+## Out of scope (deferred to v0.8+)
 
 **Already shipped:**
 
 - ~~Stateful sessions with persistent cwd across calls~~ — **shipped in v0.6** (`bash_mcp_session_create` / `_run` / `_destroy` / `_list`). Process-lifetime only; see "What's new in v0.6.0".
 - ~~Windows Scheduled Task XML for login auto-start~~ — **shipped in v0.5** at `infra/windows/BashMcp-WSL-Bootstrap.xml` + `install-task.ps1`.
+- ~~**Auto-TTL / idle cleanup**~~ — **shipped in v0.7** (opt-in via `BASH_MCP_SESSION_IDLE_TIMEOUT_S`, daemon janitor thread + audit on each eviction). See "What's new in v0.7.0".
+- ~~**A "denylist explainer" tool**~~ — **shipped in v0.7** as `bash_mcp_classify(command)`. Returns `{class, matched_pattern, hint, would_execute, ...}` without executing. Lets the agent self-check before sending.
 
 **Still pending:**
 
 - **Persistent shell state (PTY-based)** — v0.6 sessions are best-effort regex parsing of `cd` / `export` / `unset`. v0.7 could keep a real `bash` process alive per session (via `pexpect` or similar) and track shell variables, aliases, functions, `set -e` / `pipefail`, and job control. Requires a redesign of the session lifecycle and a hard cap on concurrent shells (memory + fd cost).
 - **Disk persistence for sessions** — v0.6 sessions are wiped on server restart. v0.7 could serialize `_SESSIONS` to SQLite or JSON-on-disk and restore on boot, with a migration story for callers that depend on the process-lifetime contract.
-- ~~**Auto-TTL / idle cleanup**~~ — **shipped in v0.7** (opt-in via `BASH_MCP_SESSION_IDLE_TIMEOUT_S`). See "What's new in v0.7.0".
 - **Session snapshots** (`fork` a session at a point in time) — useful for branching workflows.
 - **Cross-session env sharing** — share a named env dict across multiple sessions.
 - **Web UI for browsing the audit log** — minimal Flask/FastAPI page on a separate port with filters by tool / classification / time.
 - **Audit log compression** — gzip-on-rotation when disk usage > 500 MB. Tradeoff: log shipping tools (Loki, etc.) prefer JSONL over gzip; this would gate shipping.
 - **Audit log shipping** — Loki push API, CloudWatch Logs, or local syslog. Optional, gated by config.
 - **Per-project allowlists** (`.bash-mcp.toml` in repo root) — extend the global `ALLOWED_CWD_ROOTS` with per-repo overrides. Would be useful for monorepos with `frontend/`, `backend/`, `data/` subdirs.
-- **A "denylist explainer" tool** (`bash_mcp_classify("command")`) — returns `{class, matched_pattern, hint}` without executing. Lets the agent self-check before sending.
 - **A formal threat-model document** — STRIDE-style analysis of the audit log, the hook, the denylist, and the session lifecycle.
