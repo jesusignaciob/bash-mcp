@@ -1,13 +1,13 @@
 ---
 name: bash-mcp
-description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary)."
+description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health)."
 license: MIT
 metadata:
-  version: "1.0"
+  version: "1.4"
   category: tools
 ---
 
-# bash-mcp — WSL Bash Executor
+# bash-mcp — WSL Bash Executor (v0.4)
 
 The **REQUIRED** way to run WSL bash commands from this agent. Replaces the old `wsl -d Ubuntu-22.04 -- bash -lc "..."` pattern.
 
@@ -55,33 +55,69 @@ Returns ~37 well-known tools with `{name, path, exists, version?}`. Sorted insta
 
 Resolves a single binary. Returns `{name, path, exists, version?}`. Use for tools not in `list_binaries`.
 
-### `bash-mcp_status()`
+### `bash_mcp_status()`
 
-Read-only health check. Returns `{service, version, uptime_seconds, start_time, audit: {path, entries, size_bytes}, python_version, process: {pid, rss_bytes}, tools: [...]}`. Use this to verify the service is up without SSH/tail logs.
+Read-only health check. Returns `{service, version, uptime_seconds, start_time, audit: {path, entries, size_bytes, max_bytes, backup_count, backups_present}, concurrency: {max_concurrent, active}, python_version, process: {pid, rss_bytes}, tools: [...]}`. Use this to verify the service is up without SSH/tail logs.
 
 ## Safety Model
 
-- **HARD denylist** — always rejected (cannot be bypassed):
-  - `rm -rf /` (except `/tmp`, `/home`, `/Users`)
-  - `dd of=/dev/{sd,hd,nvme,vd}*`
-  - `:(){ :|:& };:` (fork bomb)
-  - `mkfs /dev/*`
-  - `> /dev/{sd,hd,nvme,vd}*`
-  - `chmod -R NNN /` (except `/tmp`, `/home`, `/Users`)
-  - `curl ... | bash`, `wget ... | bash`
-  - `sudo rm`
+### HARD denylist — always rejected (cannot be bypassed)
 
-- **SOFT denylist** — requires `dangerous=true`:
-  - `sudo`, `kill -9`, `kill -SIGKILL`
-  - `systemctl stop|disable|mask`
-  - `git push --force`, `git push -f`
-  - `pip install`, `npm install -g`, `apt(-get) install`
-  - `chown -R`
-  - `chmod NNN /`
-  - `> /etc/`
+Block-device destruction:
+- `rm -rf /` (except `/tmp`, `/home`, `/Users`)
+- `dd of=/dev/{sd,hd,nvme,vd}*`
+- `> /dev/{sd,hd,nvme,vd}*`
+- `tee /dev/{sd,hd,nvme,vd}*`
+- `cat|cp|mv → /dev/{sd,hd,nvme,vd}*` (block device write via file ops)
+- `mkfs /dev/*`
+
+Process / system destruction:
+- `:(){ :|:& };:` (classic fork bomb) + variants (`:(){ :|& };`, `.(){ .|.& };.`, `bomb(){ bomb|bomb& };bomb`)
+- `find ... -delete`
+- `find ... -exec rm`
+- `chmod -R NNN /` (except `/tmp`, `/home`, `/Users`)
+
+Unrecoverable deletion:
+- `shred /etc /var /usr /boot /bin /sbin/*`
+
+Supply chain:
+- `curl ... | bash`, `wget ... | bash`
+- `sudo rm`
+
+### SOFT denylist — requires `dangerous=true`
+
+Privilege / process:
+- `sudo` (any)
+- `kill -9`, `kill -SIGKILL`
+- `systemctl stop|disable|mask`
+
+System changes:
+- `git push --force`, `git push -f`
+- `chown -R`
+- `chmod NNN /`
+- `> /etc/`
+
+Package removal (v0.4):
+- `apt remove|purge|autoremove`
+- `pip uninstall`
+- `npm uninstall|rm|remove -g|--global`
+
+Package install (v0.0–v0.3):
+- `pip install`
+- `npm install -g`
+- `apt(-get) install`
+
+Destructive sync (v0.4):
+- `rsync --delete`
+
+If you intend one of these, **call `bash-mcp_run_command` with `dangerous: true`** explicitly.
+
+### Operational notes
 
 - All calls are audit-logged to `~/.local/share/bash-mcp/audit.jsonl` (JSONL).
-- Audit log is append-only; env values are NOT logged (only env var keys).
+- Audit log rotates at 25 MB (5 backups): `audit.jsonl.{1..5}`. Configurable via `BASH_MCP_AUDIT_MAX_BYTES` / `BASH_MCP_AUDIT_BACKUP_COUNT`.
+- Max 8 concurrent subprocesses; excess calls queue. Configurable via `BASH_MCP_MAX_CONCURRENT`.
+- Env values are NOT logged (only env keys).
 
 ## Common Patterns
 
@@ -101,6 +137,9 @@ bash-mcp_run_command({command: "pytest -xvs", cwd: "/home/jbecerra/projects/myap
 
 // Run a dangerous command explicitly
 bash-mcp_run_command({command: "sudo systemctl restart nginx", dangerous: true})
+
+// Run a package removal explicitly (v0.4+)
+bash-mcp_run_command({command: "pip uninstall requests", dangerous: true})
 
 // Verify service health
 bash-mcp_status()
