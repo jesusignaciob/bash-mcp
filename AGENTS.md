@@ -18,16 +18,19 @@ A small MCP server that exposes WSL bash as a structured tool to MiniMax Code. S
 ```
 src/bash_mcp/
 ├── server.py       # FastMCP server + 6 tools (@mcp.tool)
-├── executor.py     # subprocess.run wrapper, timeout, truncation, cwd allowlist
+├── executor.py     # subprocess.run wrapper, timeout, truncation, cwd allowlist, concurrency slot
 ├── safety.py       # classify(command) -> Class.{SAFE,DANGEROUS,REJECT}
-├── audit.py        # JSONL append-only logger
-└── discovery.py    # which / list_binaries (thread-pool based)
+├── audit.py        # JSONL append-only logger + size-based rotation (v0.3)
+├── discovery.py    # which / list_binaries (thread-pool based)
+└── concurrency.py  # threading.BoundedSemaphore wrapper (v0.3)
 tests/
-├── test_safety.py    # 46 parametrized denylist cases
-├── test_executor.py  # 27 cases: subprocess + cwd allowlist + Windows→WSL
-├── test_errors.py    # 9 cases: error envelope shape + hint text
-└── test_e2e.py       # 11 cases: live server round-trip
-infra/                                  # deployment artifacts (v0.2)
+├── test_safety.py            # 46 parametrized denylist cases
+├── test_executor.py          # 27 cases: subprocess + cwd allowlist + Windows→WSL
+├── test_errors.py            # 9 cases: error envelope shape + hint text
+├── test_audit_rotation.py    # 6 cases: rotation + concurrency (v0.3)
+├── test_concurrency.py       # 5 cases: semaphore behavior (v0.3)
+└── test_e2e.py               # 11 cases: live server round-trip
+infra/                                  # deployment artifacts (v0.2+)
 ├── install.sh                          # idempotent deploy to fresh WSL/Windows
 ├── launcher.sh                         # WSL bootstrap (parallel to semantic-memory-launcher.sh)
 ├── update-ip.sh                        # refresh WSL IP in mcp.json (parallel)
