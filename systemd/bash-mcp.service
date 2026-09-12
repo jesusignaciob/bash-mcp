@@ -1,0 +1,19 @@
+[Unit]
+Description=Bash MCP Server (WSL bash executor for MiniMax Code)
+After=network.target
+
+[Service]
+Type=forking
+WorkingDirectory=/home/jbecerra/projects/bash-mcp
+Environment="PATH=/home/jbecerra/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="FASTMCP_SERVER_HOST=0.0.0.0"
+Environment="FASTMCP_SERVER_PORT=54321"
+ExecStart=/usr/bin/screen -dmS bash-mcp bash -c 'cd /home/jbecerra/projects/bash-mcp && source ~/.local/bin/env && export FASTMCP_SERVER_HOST=0.0.0.0 FASTMCP_SERVER_PORT=54321 && exec uv run python -m bash_mcp.server --transport streamable-http'
+ExecStop=/usr/bin/screen -S bash-mcp -X quit
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Install]
+WantedBy=default.target
