@@ -3,11 +3,11 @@ name: bash-mcp
 description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health)."
 license: MIT
 metadata:
-  version: "1.4"
+  version: "1.5"
   category: tools
 ---
 
-# bash-mcp — WSL Bash Executor (v0.4)
+# bash-mcp — WSL Bash Executor (v0.5)
 
 The **REQUIRED** way to run WSL bash commands from this agent. Replaces the old `wsl -d Ubuntu-22.04 -- bash -lc "..."` pattern.
 

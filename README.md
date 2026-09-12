@@ -224,14 +224,27 @@ This rewrites only the `bash-mcp` URL in `~/.minimax/mcp/mcp.json` (and `~/.curs
 
 ### Bootstrap on Windows login
 
-The plan was to extend `semantic-memory-launcher.sh`, but to respect the parallel-infra principle we ship `infra/launcher.sh` instead. To enable on Windows login:
+`infra/launcher.sh` ships out of the box. To run it automatically on every Windows logon, register the scheduled task (run as Administrator from PowerShell):
 
 ```powershell
-# As admin, register a new Scheduled Task similar to SemanticMemory-WSL-Bootstrap:
-schtasks /Create /TN BashMcp-WSL-Bootstrap /XML C:\path\to\bash-mcp-launcher-task.xml
+powershell -ExecutionPolicy Bypass -File C:\path\to\bash-mcp\infra\windows\install-task.ps1
 ```
 
-(The XML template is not yet checked in; clone the semantic-memory one and adjust the script path.)
+This registers `BashMcp-WSL-Bootstrap` in Task Scheduler with a 60s delay, RunLevel=Highest, action = `wsl.exe /home/jbecerra/projects/bash-mcp/infra/launcher.sh`. The launcher ensures `bash-mcp.service` is running (idempotent: systemd skips if already running).
+
+Verify:
+
+```powershell
+Get-ScheduledTask -TaskName BashMcp-WSL-Bootstrap | Format-List
+```
+
+Remove:
+
+```powershell
+Unregister-ScheduledTask -TaskName BashMcp-WSL-Bootstrap -Confirm:$false
+```
+
+The `install.sh` script (when run without `--dry-run`) prints the same install-task.ps1 path as a hint.
 
 ## Development
 
@@ -290,7 +303,7 @@ bash-mcp/
 │   ├── test_concurrency.py          # 5 concurrency limit cases
 │   └── test_e2e.py                  # 11 live-server round-trips
 └── infra/                           # deployment artifacts
-    ├── install.sh                   # idempotent deploy
+    ├── install.sh                   # idempotent deploy (--dry-run supported)
     ├── launcher.sh                  # WSL bootstrap (parallel to semantic-memory-launcher.sh)
     ├── update-ip.sh                 # refresh WSL IP in mcp.json
     ├── mcp.json.snippet             # documentation reference
@@ -299,10 +312,13 @@ bash-mcp/
     ├── hooks/
     │   ├── bash-mcp-redirect.md
     │   └── bash-mcp-redirect.js
-    └── skills/
-        └── bash-mcp/
-            ├── SKILL.md
-            └── _meta.json
+    ├── skills/
+    │   └── bash-mcp/
+    │       ├── SKILL.md
+    │       └── _meta.json
+    └── windows/                     # Windows-side deployment helpers
+        ├── BashMcp-WSL-Bootstrap.xml # Scheduled Task template
+        └── install-task.ps1          # PowerShell installer for the task
 ```
 
 ### Add a new tool
@@ -376,7 +392,7 @@ cd /home/jbecerra/projects/bash-mcp
 - Web UI for browsing the audit log.
 - Audit log compression with gzip on rotation (if disk > 500 MB).
 - Audit log shipping to external sink (Loki, CloudWatch).
-- Windows Scheduled Task XML for login auto-start (deferred from v0.3).
+- Windows Scheduled Task XML for login auto-start (**shipped in v0.5** at `infra/windows/`).
 - Per-project allowlists (`.bash-mcp.toml` in repo root).
 - A "denylist explainer" tool (`bash_mcp_classify("command")`) for the agent.
 - A formal threat-model document.

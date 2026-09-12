@@ -39,9 +39,12 @@ infra/                                  # deployment artifacts (v0.2+)
 ├── hooks/
 │   ├── bash-mcp-redirect.md            # PreToolUse hook (deployed to ~/.minimax/agents/mavis/hooks/)
 │   └── bash-mcp-redirect.js            # Node script invoked by the hook
-└── skills/bash-mcp/
-    ├── SKILL.md                        # deployed to ~/.mavis/skills/bash-mcp/
-    └── _meta.json
+├── skills/bash-mcp/
+│   ├── SKILL.md                        # deployed to ~/.mavis/skills/bash-mcp/
+│   └── _meta.json
+└── windows/                            # Windows-side deployment helpers
+    ├── BashMcp-WSL-Bootstrap.xml       # Scheduled Task template (Logon trigger)
+    └── install-task.ps1                # PowerShell installer for the Scheduled Task
 ```
 
 ## Running

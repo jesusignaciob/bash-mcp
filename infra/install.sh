@@ -138,6 +138,13 @@ cat <<MCEOF
 MCEOF
 echo ""
 echo "(If bash-mcp is already registered, this is a no-op update.)"
+echo ""
+echo "OPTIONAL: Auto-start on Windows login (Scheduled Task)"
+echo "  Run as Administrator from PowerShell:"
+echo "    powershell -ExecutionPolicy Bypass -File $REPO_ROOT\\infra\\windows\\install-task.ps1"
+echo ""
+echo "  This registers a Task Scheduler entry that invokes the WSL-side launcher.sh"
+echo "  on every Windows logon (60s delay), keeping bash-mcp.service running."
 echo "============================================================"
 echo ""
 echo "Verify after running for real:"
