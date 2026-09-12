@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-12
+
+### Added (quarterly denylist review #1)
+
+- **Hard denylist** (6 new patterns, always rejected):
+  - `find ... -delete` — recursive wipe
+  - `find ... -exec rm` — recursive wipe via exec
+  - Fork bomb variants: `:(){ :|& };` (broader body matching)
+  - `tee /dev/{sd,hd,nvme,vd}*` — block device write via tee
+  - `shred` in `/etc /var /usr /boot /bin /sbin` — unrecoverable system delete
+  - `cat|cp|mv` to `/dev/sdX` — block device write via file ops
+
+- **Soft denylist** (4 new patterns, requires `dangerous=true`):
+  - `rsync --delete` — destructive sync
+  - `apt remove|purge|autoremove` — package removal
+  - `pip uninstall` — Python package removal
+  - `npm uninstall|rm|remove -g|--global` — global npm uninstall (incl. `rm` alias and `--global` flag)
+
+- **Denylist review history block** at the top of `safety.py` listing all reviews to date (v0.1, v0.2, v0.3, v0.4). Future quarterly reviews append a line.
+
+### Tests
+
+- 164 passing (was 95 in v0.3).
+  - 115 safety (was 46) — added 69 parametrized cases across 10 new pattern groups + 1 review-history check
+  - 27 executor (unchanged)
+  - 9 errors (unchanged)
+  - 6 audit_rotation (unchanged)
+  - 5 concurrency (unchanged)
+  - 11 e2e (unchanged)
+
+### Backwards compatibility
+
+No breaking changes. The 10 new patterns are additive — they catch additional dangerous commands but do not change behavior for any command that was previously SAFE or DANGEROUS.
+
+### Deployment
+
+```bash
+systemctl --user restart bash-mcp.service
+```
+
 ## [0.3.0] — 2026-09-12
 
 ### Added
