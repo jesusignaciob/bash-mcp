@@ -201,12 +201,26 @@ def test_status(sid: str) -> None:
     assert isinstance(out["version"], str)
     assert out["uptime_seconds"] >= 0
     assert isinstance(out["start_time"], str)
-    # Audit stats
+    # Audit stats (v0.2 fields)
     assert "audit" in out
     assert isinstance(out["audit"]["entries"], int)
     assert out["audit"]["entries"] >= 0
     assert isinstance(out["audit"]["size_bytes"], int)
     assert out["audit"]["size_bytes"] >= 0
+    # Audit stats (v0.3 fields — rotation)
+    assert "max_bytes" in out["audit"]
+    assert isinstance(out["audit"]["max_bytes"], int)
+    assert out["audit"]["max_bytes"] > 0
+    assert "backup_count" in out["audit"]
+    assert isinstance(out["audit"]["backup_count"], int)
+    assert out["audit"]["backup_count"] >= 1
+    assert "backups_present" in out["audit"]
+    assert isinstance(out["audit"]["backups_present"], list)
+    # Concurrency (v0.3 fields)
+    assert "concurrency" in out
+    assert out["concurrency"]["max_concurrent"] >= 1
+    assert isinstance(out["concurrency"]["active"], int)
+    assert out["concurrency"]["active"] >= 0
     # Process info
     assert isinstance(out["process"]["pid"], int)
     # Tools list (self-reference included)

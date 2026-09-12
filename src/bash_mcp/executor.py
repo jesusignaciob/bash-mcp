@@ -15,6 +15,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from bash_mcp.concurrency import slot as concurrency_slot
+
 
 DEFAULT_TIMEOUT_MS = 30_000
 MAX_TIMEOUT_MS = 600_000            # 10 min hard cap
@@ -176,14 +178,15 @@ def run(
     audit_id = audit_id or uuid.uuid4().hex
     started = time.monotonic()
     try:
-        completed = subprocess.run(
-            [bash, "-lc", command],
-            cwd=str(cwd_path),
-            env=full_env,
-            timeout=timeout_ms / 1000,
-            capture_output=True,
-            text=True,
-        )
+        with concurrency_slot():
+            completed = subprocess.run(
+                [bash, "-lc", command],
+                cwd=str(cwd_path),
+                env=full_env,
+                timeout=timeout_ms / 1000,
+                capture_output=True,
+                text=True,
+            )
         duration_ms = int((time.monotonic() - started) * 1000)
         stdout, stdout_truncated, stdout_full = _truncate(
             completed.stdout or "", "stdout", audit_id
