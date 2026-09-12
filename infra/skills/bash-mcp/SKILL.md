@@ -1,13 +1,13 @@
 ---
 name: bash-mcp
-description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health)."
+description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6)."
 license: MIT
 metadata:
-  version: "1.5"
+  version: "1.6"
   category: tools
 ---
 
-# bash-mcp — WSL Bash Executor (v0.5)
+# bash-mcp — WSL Bash Executor (v0.6)
 
 The **REQUIRED** way to run WSL bash commands from this agent. Replaces the old `wsl -d Ubuntu-22.04 -- bash -lc "..."` pattern.
 
@@ -57,7 +57,64 @@ Resolves a single binary. Returns `{name, path, exists, version?}`. Use for tool
 
 ### `bash_mcp_status()`
 
-Read-only health check. Returns `{service, version, uptime_seconds, start_time, audit: {path, entries, size_bytes, max_bytes, backup_count, backups_present}, concurrency: {max_concurrent, active}, python_version, process: {pid, rss_bytes}, tools: [...]}`. Use this to verify the service is up without SSH/tail logs.
+Read-only health check. Returns `{service, version, uptime_seconds, start_time, audit: {path, entries, size_bytes, max_bytes, backup_count, backups_present}, concurrency: {max_concurrent, active}, sessions: {active, max_env_per_session}, python_version, process: {pid, rss_bytes}, tools: [...]}`. Use this to verify the service is up without SSH/tail logs.
+
+## Stateful Sessions (v0.6)
+
+A session is a server-side container that keeps a `cwd` and an accumulated `env` dict across calls. Use sessions when you need to:
+
+- `cd` somewhere, run several commands there, then run more — your cwd persists.
+- `export` a variable, run a tool that reads it, then run another tool that needs the same value — your env persists.
+- Avoid re-sending the same `cwd` / `env` on every call.
+
+**Important: sessions are process-lifetime.** A server restart wipes them. There is no auto-TTL; you must call `bash_mcp_session_destroy` when done.
+
+### `bash-mcp_session_create(name?, cwd?) → {session_id, ...}`
+
+Create a new session. Optional human-readable `name` (≤64 chars) and optional starting `cwd` (must be under an allowed root — same rules as `bash_run_command`).
+
+### `bash-mcp_session_run(session_id, command, timeout_ms?, dangerous?) → result`
+
+Run a command in a session. Same denylist, concurrency, timeout, and audit semantics as `bash-mcp_run_command`. Adds:
+
+- Runs in `session.cwd` (instead of `$HOME` default).
+- Inherits `session.env` (after `os.environ`).
+- After `exit_code == 0`, parses top-level `cd PATH`, `export VAR=value`, `unset VAR` from the command text and updates the session.
+- Returns `cwd` and `env_keys` in the response so you can confirm state.
+
+**Parsing limitations** (documented; intentional for v0.6):
+- Only top-level statements on simple command chains are tracked.
+- Shell scripts, functions, `if`/`while` bodies, `$(...)`, backticks, heredocs, multi-line `\` continuations are out of scope.
+- `export X="$HOME"` stores the literal `$HOME` (the subprocess still sees the real value because `bash -lc` expanded it; the session does not).
+
+### `bash-mcp_session_destroy(session_id) → {ok, session_id, freed_env_vars}`
+
+Destroy a session and free its memory. Returns `SESSION_NOT_FOUND` if the id is unknown.
+
+### `bash-mcp_session_list() → [...]`
+
+List active sessions. Most-recently-used first. Each entry: `{session_id, name, cwd, created_at, last_used_at, env_count, env_keys}`.
+
+### Example
+
+```javascript
+// 1. Create a session in /tmp
+const { session_id } = bash-mcp_session_create({name: "build", cwd: "/tmp"})
+
+// 2. cd, set an env var, run a command — all in one call
+bash-mcp_session_run({
+  session_id, command: "cd /home/jbecerra/projects/myapp && export FOO=bar && pwd && echo $FOO"
+})
+
+// 3. Next call — cwd and env persist without re-sending
+const r = bash-mcp_session_run({
+  session_id, command: "pwd && echo $FOO"
+})
+// r.stdout → "/home/jbecerra/projects/myapp\nbar\n"
+
+// 4. Cleanup
+bash-mcp_session_destroy({session_id})
+```
 
 ## Safety Model
 
@@ -118,6 +175,7 @@ If you intend one of these, **call `bash-mcp_run_command` with `dangerous: true`
 - Audit log rotates at 25 MB (5 backups): `audit.jsonl.{1..5}`. Configurable via `BASH_MCP_AUDIT_MAX_BYTES` / `BASH_MCP_AUDIT_BACKUP_COUNT`.
 - Max 8 concurrent subprocesses; excess calls queue. Configurable via `BASH_MCP_MAX_CONCURRENT`.
 - Env values are NOT logged (only env keys).
+- v0.6 sessions: per-session env dict is capped at 256 vars (configurable via `BASH_MCP_SESSION_MAX_ENV_VARS`). Sessions are process-lifetime — a restart wipes them. Caller must `bash_mcp_session_destroy` to free memory.
 
 ## Common Patterns
 
@@ -143,6 +201,12 @@ bash-mcp_run_command({command: "pip uninstall requests", dangerous: true})
 
 // Verify service health
 bash-mcp_status()
+
+// v0.6 — multi-step workflow with persistent cwd + env
+const { session_id } = bash-mcp_session_create({name: "demo", cwd: "/tmp"})
+bash-mcp_session_run({session_id, command: "cd /home/jbecerra/projects/myapp && export DEBUG=1"})
+bash-mcp_session_run({session_id, command: "pwd && echo $DEBUG"})
+bash-mcp_session_destroy({session_id})
 ```
 
 ## Operational Notes
