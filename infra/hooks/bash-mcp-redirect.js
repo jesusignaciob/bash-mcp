@@ -8,14 +8,17 @@
 //           _abort: {reason: "..."}  -> gates the tool call
 //
 // Escape hatch: if the command contains BASH_MCP_SKIP=1, the hook passes
-// through (lets tests run without self-interception). Symmetric hatch in
-// the .md wrapper so even the wrapper itself can run under test.
+// through (lets tests run without self-interception).
 
 const raw = require("fs").readFileSync(0, "utf8");
 
 let payload;
 try {
-  payload = JSON.parse(raw);
+  // Strip leading BOM (UTF-8) and whitespace before parsing.
+  // When invoked via `wsl -d ... -- node script.js`, the harness's pipe
+  // may prepend a BOM or carry over whitespace that breaks JSON.parse.
+  const cleaned = raw.replace(/^\uFEFF/, "").replace(/^\s+/, "");
+  payload = JSON.parse(cleaned);
 } catch (e) {
   // Malformed JSON — fail open (never block the agent on our bug)
   process.stdout.write("{}");
