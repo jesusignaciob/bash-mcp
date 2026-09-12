@@ -63,7 +63,6 @@ def _mcp_session() -> tuple[str, str]:
         sid = r.headers.get("mcp-session-id")
         assert sid, f"no session id in headers: {dict(r.headers)}"
 
-        # Send initialized notification
         c.post(
             ENDPOINT,
             headers={"Content-Type": "application/json",
@@ -90,7 +89,6 @@ def _call_tool(sid: str, name: str, arguments: dict | None = None) -> dict:
         )
         assert r.status_code == 200, f"{r.status_code}: {r.text}"
 
-    # Response is SSE: "event: message\ndata: {...}\n\n"
     m = re.search(r"^data: (.+)$", r.text, re.MULTILINE)
     assert m, f"no data line in response: {r.text!r}"
     payload = json.loads(m.group(1))
@@ -101,7 +99,7 @@ def _call_tool(sid: str, name: str, arguments: dict | None = None) -> dict:
 
 
 def test_tools_list(sid: str) -> None:
-    """All 4 tools + echo should be listed."""
+    """All 6 tools (5 bash-mcp + echo) should be listed."""
     with httpx.Client(timeout=5.0) as c:
         r = c.post(
             ENDPOINT,
@@ -115,8 +113,8 @@ def test_tools_list(sid: str) -> None:
         assert m
         payload = json.loads(m.group(1))
     names = sorted(t["name"] for t in payload["result"]["tools"])
-    assert names == ["bash_check_env", "bash_list_binaries", "bash_run_command",
-                     "bash_which", "echo"]
+    assert names == ["bash_check_env", "bash_list_binaries", "bash_mcp_status",
+                     "bash_run_command", "bash_which", "echo"]
 
 
 def test_run_command_echo(sid: str) -> None:
@@ -137,19 +135,24 @@ def test_run_command_ls_nonexistent(sid: str) -> None:
 
 
 def test_run_command_rejects_hard(sid: str) -> None:
-    """rm -rf /etc must be REJECTED."""
+    """rm -rf /etc must be REJECTED with hint."""
     out = _call_tool(sid, "bash_run_command", {"command": "rm -rf /etc"})
     assert "error" in out
-    assert out["error"]["code"] == "FORBIDDEN_COMMAND"
+    err = out["error"]
+    assert err["code"] == "FORBIDDEN_COMMAND"
+    assert "hint" in err
+    assert "documentation" in err
+    assert "dangerous=true" in err["hint"]  # mentions no-bypass
     assert out["classification"]["class"] == "reject"
 
 
 def test_run_command_dangerous_requires_override(sid: str) -> None:
-    """sudo without dangerous=true must be DENIED."""
+    """sudo without dangerous=true must be DENIED with override hint."""
     out = _call_tool(sid, "bash_run_command", {"command": "sudo whoami"})
     assert "error" in out
-    assert out["error"]["code"] == "DANGEROUS_COMMAND_REQUIRES_OVERRIDE"
-    assert out["classification"]["class"] == "dangerous"
+    err = out["error"]
+    assert err["code"] == "DANGEROUS_COMMAND_REQUIRES_OVERRIDE"
+    assert "dangerous=true" in err["hint"]
 
 
 def test_run_command_timeout(sid: str) -> None:
@@ -175,7 +178,6 @@ def test_list_binaries(sid: str) -> None:
     out = _call_tool(sid, "bash_list_binaries")
     assert isinstance(out, list)
     assert len(out) >= 10
-    # rg is expected on this system
     rg = next((b for b in out if b["name"] == "rg"), None)
     assert rg is not None
     assert rg["exists"] is True
@@ -190,6 +192,41 @@ def test_which(sid: str) -> None:
     missing = _call_tool(sid, "bash_which", {"name": f"definitely-not-real-{uuid.uuid4().hex[:6]}"})
     assert missing["exists"] is False
     assert missing["path"] is None
+
+
+def test_status(sid: str) -> None:
+    """bash_mcp_status returns service health + audit stats."""
+    out = _call_tool(sid, "bash_mcp_status")
+    assert out["service"] == "active"
+    assert isinstance(out["version"], str)
+    assert out["uptime_seconds"] >= 0
+    assert isinstance(out["start_time"], str)
+    # Audit stats
+    assert "audit" in out
+    assert isinstance(out["audit"]["entries"], int)
+    assert out["audit"]["entries"] >= 0
+    assert isinstance(out["audit"]["size_bytes"], int)
+    assert out["audit"]["size_bytes"] >= 0
+    # Process info
+    assert isinstance(out["process"]["pid"], int)
+    # Tools list (self-reference included)
+    assert "bash_run_command" in out["tools"]
+    assert "bash_check_env" in out["tools"]
+    assert "bash_list_binaries" in out["tools"]
+    assert "bash_which" in out["tools"]
+    assert "bash_mcp_status" in out["tools"]
+    assert "echo" in out["tools"]
+
+
+def test_invalid_cwd_returns_hint(sid: str) -> None:
+    """INVALID_CWD error must include hint + documentation fields."""
+    out = _call_tool(sid, "bash_run_command", {"command": "echo x", "cwd": "/etc"})
+    assert "error" in out
+    err = out["error"]
+    assert err["code"] == "INVALID_CWD"
+    assert "hint" in err
+    assert "documentation" in err
+    assert "allowed roots" in err["hint"].lower()
 
 
 @pytest.fixture
