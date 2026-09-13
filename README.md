@@ -25,6 +25,15 @@ Running WSL commands from PowerShell (`wsl -d Ubuntu-22.04 -- bash -lc "..."`) h
 - **`bash_mcp_status` extended** with `audit.{max_bytes, backup_count, backups_present}` and `concurrency.{max_concurrent, active}` fields.
 - 95 tests passing (up from 84).
 
+## What's new in v0.8.0
+
+- **Per-project cwd allowlists via `.bash-mcp.toml`** — drop a TOML file at
+  your repo root (or any ancestor) and bash-mcp picks it up for calls whose
+  cwd lives under that directory. Two modes: ``extend`` (default; merge with
+  global) and ``replace`` (sandbox; replace global). Zero behavior change when
+  no file is present. See **Configuration → `.bash-mcp.toml`** below for the
+  schema. No new MCP tool — v0.8 is purely a config-driven feature.
+
 ## What's new in v0.7.1
 
 - **`bash_mcp_audit_read(backup_index, max_entries?, tool_filter?)`** — closes the v0.7 gzip one-way archival caveat. Transparently decompresses `audit.jsonl.N.gz` backups in addition to plaintext. Returns a stable `{backup_index, path, format, entries, returned}` object. Audited as `tool="bash_mcp_audit_read"`.
@@ -167,6 +176,50 @@ All via environment variables. Set in `~/.config/systemd/user/bash-mcp.service` 
 | `BASH_MCP_AUDIT_MAX_BYTES` | `26214400` (25 MB) | Audit log rotation threshold |
 | `BASH_MCP_AUDIT_BACKUP_COUNT` | `5` | Audit log backups kept |
 | `BASH_MCP_MAX_CONCURRENT` | `8` | Max in-flight subprocesses |
+
+### `.bash-mcp.toml` (per-project cwd allowlist, v0.8)
+
+Drop a `.bash-mcp.toml` at any directory in your project. bash-mcp walks up
+from the call's cwd to find it (stops at `$HOME` or filesystem root, max 32
+hops) and applies the resulting allowlist to that call. No new tool, no
+schema-validation library, no install hook.
+
+**Schema:**
+
+```toml
+# mode is optional. Defaults to "extend".
+mode = "extend"   # or "replace"
+
+# required: list of paths the project's cwds may resolve under.
+# Relative entries resolve against the TOML's parent dir;
+# absolute entries (after ~ expansion) are used as-is.
+# Existence is NOT checked here — executor.run checks separately.
+allowed_roots = [".", "frontend", "backend", "/srv/shared-cache"]
+```
+
+**Modes:**
+
+- ``extend`` (default) — *add* the project's ``allowed_roots`` to the global
+  ``ALLOWED_CWD_ROOTS``. Use this when your project needs to expose
+  additional worktrees, build dirs, or shared caches outside the global
+  allowlist (e.g. ``/srv/shared-cache`` above).
+- ``replace`` — *replace* the global list with the project's roots. Use
+  this for sandboxed environments where the global list is too permissive.
+  An empty ``allowed_roots`` list is a deliberate lockout (no cwd is
+  allowed; the caller receives ``INVALID_CWD``).
+
+**Failure modes (all fail-soft — bash-mcp falls back to the global
+allowlist, no crash):**
+
+- Malformed TOML → stderr warning, global roots apply.
+- Unknown ``mode`` value → stderr warning, defaults to ``extend``.
+- ``allowed_roots`` is not a list of strings → stderr warning, global
+  roots apply.
+
+**Cache:** the loaded allowlist is cached per ``(start_dir, mtime_ns)`` for
+the lifetime of the bash-mcp process. Editing the TOML invalidates the
+cache; deleting the TOML means the next call from that directory re-walks
+the tree.
 
 ## Deploying
 
@@ -470,5 +523,5 @@ cd /home/jbecerra/projects/bash-mcp
 - **Web UI for browsing the audit log** — minimal Flask/FastAPI page on a separate port with filters by tool / classification / time.
 - ~~**Audit log compression**~~ — **shipped in v0.7.1** via `bash_mcp_audit_read` (closes the gzip one-way archival caveat). See "What's new in v0.7.1". Remaining: gzip-on-rotation above a higher threshold + audit log shipping (Loki/CloudWatch) still deferred to v0.9+.
 - **Audit log shipping** — Loki push API, CloudWatch Logs, or local syslog. Optional, gated by config.
-- **Per-project allowlists** (`.bash-mcp.toml` in repo root) — extend the global `ALLOWED_CWD_ROOTS` with per-repo overrides. Would be useful for monorepos with `frontend/`, `backend/`, `data/` subdirs.
+- ~~**Per-project allowlists** (`.bash-mcp.toml` in repo root)~~ — **shipped in v0.8** via the `.bash-mcp.toml` schema. See **Configuration → `.bash-mcp.toml`** above. Supports both ``extend`` (merge with global) and ``replace`` (sandbox) modes.
 - **A formal threat-model document** — STRIDE-style analysis of the audit log, the hook, the denylist, and the session lifecycle.

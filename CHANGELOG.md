@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-13
+
+### Added
+
+- **Per-project cwd allowlists via `.bash-mcp.toml`** — projects can drop a TOML file at the repo root (or any ancestor) to override the global `ALLOWED_CWD_ROOTS` for calls whose cwd lives under that directory. Two modes:
+  - `extend` (default) — ADD the project's `allowed_roots` to the global list. Useful for projects exposing worktrees/build dirs outside the global allowlist.
+  - `replace` — REPLACE the global list with the project's roots. Useful for sandboxed environments where the global list is too permissive (empty list = deliberate lockout).
+- **New module `src/bash_mcp/project_allowlist.py`** — walk-up search for `.bash-mcp.toml` (stops at `$HOME` or filesystem root; 32-hop safety belt), TOML parse with `tomllib` (3.11+) / `tomli` (3.10), mode resolver, process-lifetime cache keyed on `(start_dir, mtime_ns)` so editing the TOML invalidates the entry automatically. Fail-soft on malformed TOML / unknown mode / non-list `allowed_roots` (stderr warning + fall back to global).
+- **`executor._is_under_allowed_root(cwd, effective_roots=None)`** — now accepts an optional `effective_roots` tuple; defaults to `ALLOWED_CWD_ROOTS`. `executor.run()` and `sessions._resolve_cwd()` both call `project_allowlist.effective_allowed_roots(cwd, ALLOWED_CWD_ROOTS)` before the check. Zero behavior change when no `.bash-mcp.toml` is found.
+- **`server._hint_for_invalid_cwd`** — mentions the project allowlist source + roots when one is in effect (so `INVALID_CWD` errors point the user at the project config, not just the global allowlist).
+- **Version bump** — `__version__` in `src/bash_mcp/__init__.py` bumped from `0.7.1` to `0.8.0`.
+- **`tomli>=2.0` direct dependency** — promoted from transitive to direct in `pyproject.toml` (still conditional on Python < 3.11; `tomllib` is stdlib on 3.11+).
+
+### Tests
+
+- **281 passing** (up from 265 before v0.8; 11 unit + 3 executor + 2 sessions added; e2e 24 skipped when no live server).
+- New `tests/test_project_allowlist.py` — 11 unit tests covering walk-up, negative cache, mtime invalidation, extend/replace/empty-lockout, and fail-soft on malformed TOML / unknown mode / non-list `allowed_roots`.
+- `tests/test_executor.py` — 3 new tests (extend allows, replace drops global, no-TOML falls back to global).
+- `tests/test_sessions.py` — 2 new tests (session_create with project allowlist, session_create rejected by replace-mode lockout).
+- `infra/scripts/smoke-v07.py` — 1 new section (~3 cases) for per-project allowlist live-server round-trip.
+
+### Backwards compatibility
+
+- Zero behavior change when no `.bash-mcp.toml` is present (the most common case).
+- All v0.7.1 callers see zero behavior change.
+- 12 MCP tools — no new tool added (v0.8 is config-only).
+- `bash_mcp_status` output unchanged.
+- No new environment variables; no install.sh change.
+
+### Documentation
+
+- README: new "What's new in v0.8.0" section, new "Configuration → `.bash-mcp.toml`" subsection, "Out of scope" item struck through.
+- AGENTS.md: new "## v0.8 (added 2026-09-13)" section + project_allowlist.py added to `src/` tree; test_project_allowlist.py added to `tests/` tree; test_executor.py / test_sessions.py counts bumped.
+
 ## [0.7.1] — 2026-09-13
 
 ### Added

@@ -94,12 +94,34 @@ def make_error_response(
 
 
 def _hint_for_invalid_cwd(cwd_attempted: str) -> str:
-    return (
+    """Hint surfaced on InvalidCwdError.
+
+    v0.8: when a project allowlist is in effect (a ``.bash-mcp.toml``
+    lives in or above ``cwd_attempted``), mention it so the user knows
+    the source of the (possibly different) allowlist.
+    """
+    base = (
         f"cwd '{cwd_attempted}' is not under an allowed root. "
-        f"Allowed roots: {', '.join(ALLOWED_CWD_ROOTS)}. "
+    )
+    try:
+        from bash_mcp import project_allowlist  # local import: server hot path
+        proj = project_allowlist.load(cwd_attempted)
+    except Exception:
+        proj = None
+    if proj is not None:
+        base += (
+            f"Project allowlist ({proj.config_path}, mode={proj.mode!r}) "
+            f"allowed roots: {', '.join(proj.allowed_roots) or '<none — lockout>'}. "
+        )
+    else:
+        base += (
+            f"Allowed roots: {', '.join(ALLOWED_CWD_ROOTS)}. "
+        )
+    base += (
         "If the path is a Windows-style path (C:\\foo), it is automatically converted "
         "to /mnt/c/foo. Otherwise, pass a path under one of the allowed roots."
     )
+    return base
 
 
 @mcp.tool

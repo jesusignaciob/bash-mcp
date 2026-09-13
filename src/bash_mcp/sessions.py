@@ -38,10 +38,12 @@ import uuid
 from dataclasses import dataclass, field
 
 from bash_mcp.executor import (
+    ALLOWED_CWD_ROOTS,
     InvalidCwdError,
     _convert_windows_path,
     _is_under_allowed_root,
 )
+from bash_mcp import project_allowlist
 
 
 DEFAULT_MAX_ENV_VARS = 256
@@ -267,9 +269,18 @@ def _resolve_cwd(cwd: str | None) -> str:
                 os.path.join(os.path.expanduser("~"), effective)
             )
 
-    if not _is_under_allowed_root(effective):
+    # v0.8: per-project allowlist (same semantics as executor.run).
+    effective_roots = project_allowlist.effective_allowed_roots(
+        effective, ALLOWED_CWD_ROOTS
+    )
+    if not _is_under_allowed_root(effective, effective_roots):
+        if effective_roots is None:
+            allowed_msg = ", ".join(ALLOWED_CWD_ROOTS)
+        else:
+            allowed_msg = ", ".join(effective_roots)
         raise InvalidCwdError(
-            f"cwd not under an allowed root: {effective}"
+            f"cwd not under an allowed root: {effective}; "
+            f"allowed: {allowed_msg}"
         )
 
     if not os.path.exists(effective):

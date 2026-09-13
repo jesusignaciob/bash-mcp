@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bash_mcp.concurrency import slot as concurrency_slot
+from bash_mcp import project_allowlist
 
 
 DEFAULT_TIMEOUT_MS = 30_000
@@ -93,9 +94,25 @@ def _convert_windows_path(cwd: str) -> str:
     return f"/mnt/{drive}/{rest}"
 
 
-def _is_under_allowed_root(cwd: str) -> bool:
+def _is_under_allowed_root(
+    cwd: str,
+    effective_roots: tuple[str, ...] | None = None,
+) -> bool:
+    """Check whether ``cwd`` is under one of the allowed roots.
+
+    Args:
+        cwd: The absolute cwd to check.
+        effective_roots: When provided, check against this tuple
+            instead of ``ALLOWED_CWD_ROOTS``. ``executor.run`` passes
+            the per-project allowlist (via
+            ``project_allowlist.effective_allowed_roots``) when a
+            ``.bash-mcp.toml`` is in effect for the call's start dir;
+            ``None`` means "fall back to the global allowlist" (the
+            pre-v0.8 behavior).
+    """
     s = str(cwd)
-    for root in ALLOWED_CWD_ROOTS:
+    roots = effective_roots if effective_roots is not None else ALLOWED_CWD_ROOTS
+    for root in roots:
         if s == root or s.startswith(root + "/"):
             return True
     return False
@@ -154,10 +171,20 @@ def run(
 
     # Step 4: allowlist check — BEFORE the existence check so we fail fast
     # with a clear message instead of "No such file or directory".
-    if not _is_under_allowed_root(effective_cwd):
+    # v0.8: per-project allowlist via .bash-mcp.toml. Walks up from
+    # effective_cwd looking for the config; merges (extend) or replaces
+    # the global roots. None = no project TOML = fall back to global.
+    effective_roots = project_allowlist.effective_allowed_roots(
+        effective_cwd, ALLOWED_CWD_ROOTS
+    )
+    if not _is_under_allowed_root(effective_cwd, effective_roots):
+        if effective_roots is None:
+            allowed_msg = ", ".join(ALLOWED_CWD_ROOTS)
+        else:
+            allowed_msg = ", ".join(effective_roots)
         raise InvalidCwdError(
             f"cwd not under an allowed root: {effective_cwd}; "
-            f"allowed: {', '.join(ALLOWED_CWD_ROOTS)}"
+            f"allowed: {allowed_msg}"
         )
 
     # Step 5: existence + is_dir check.

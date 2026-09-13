@@ -5,8 +5,8 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform != 'win32'",
     "python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform == 'win32'",
-    "python_full_version < '3.11' and sys_platform == 'win32'",
     "python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform != 'win32'",
+    "python_full_version < '3.11' and sys_platform == 'win32'",
     "python_full_version < '3.11' and sys_platform != 'win32'",
 ]
 
@@ -80,6 +80,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
     { name = "pydantic" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
 
 [package.dev-dependencies]
@@ -93,6 +94,7 @@ dev = [
 requires-dist = [
     { name = "fastmcp", specifier = "==2.7.0" },
     { name = "pydantic", specifier = ">=2.10.6,<2.12.0" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -453,20 +455,20 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "anyio", marker = "python_full_version >= '3.14'" },
-    { name = "httpx", marker = "python_full_version >= '3.14'" },
-    { name = "httpx-sse", marker = "python_full_version >= '3.14'" },
-    { name = "jsonschema", marker = "python_full_version >= '3.14'" },
-    { name = "pydantic", marker = "python_full_version >= '3.14'" },
-    { name = "pydantic-settings", marker = "python_full_version >= '3.14'" },
-    { name = "pyjwt", extra = ["crypto"], marker = "python_full_version >= '3.14'" },
-    { name = "python-multipart", marker = "python_full_version >= '3.14'" },
-    { name = "pywin32", marker = "python_full_version >= '3.14' and sys_platform == 'win32'" },
-    { name = "sse-starlette", marker = "python_full_version >= '3.14'" },
-    { name = "starlette", marker = "python_full_version >= '3.14'" },
-    { name = "typing-extensions", marker = "python_full_version >= '3.14'" },
-    { name = "typing-inspection", marker = "python_full_version >= '3.14'" },
-    { name = "uvicorn", marker = "python_full_version >= '3.14' and sys_platform != 'emscripten'" },
+    { name = "anyio" },
+    { name = "httpx" },
+    { name = "httpx-sse" },
+    { name = "jsonschema" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "python-multipart" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "sse-starlette" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+    { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/27/3c/347cf965d313f5d41764e7d46bea6ffe7d9ef13b983cc429b0340962a082/mcp-1.27.2.tar.gz", hash = "sha256:8e02db104096d1c25b28e64bde29a5c32b31bc241710213e12fd4d84985bdfef", size = 621116, upload-time = "2026-05-29T17:16:04.039Z" }
 wheels = [
@@ -479,25 +481,25 @@ version = "1.30.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform == 'win32'",
-    "python_full_version < '3.11' and sys_platform == 'win32'",
     "python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform != 'win32'",
+    "python_full_version < '3.11' and sys_platform == 'win32'",
     "python_full_version < '3.11' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "anyio", marker = "python_full_version < '3.14'" },
-    { name = "httpx", marker = "python_full_version < '3.14'" },
-    { name = "httpx-sse", marker = "python_full_version < '3.14'" },
-    { name = "jsonschema", marker = "python_full_version < '3.14'" },
-    { name = "pydantic", marker = "python_full_version < '3.14'" },
-    { name = "pydantic-settings", marker = "python_full_version < '3.14'" },
-    { name = "pyjwt", extra = ["crypto"], marker = "python_full_version < '3.14'" },
-    { name = "python-multipart", marker = "python_full_version < '3.14'" },
-    { name = "pywin32", marker = "python_full_version < '3.14' and sys_platform == 'win32'" },
-    { name = "sse-starlette", marker = "python_full_version < '3.14'" },
-    { name = "starlette", marker = "python_full_version < '3.14'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.14'" },
-    { name = "typing-inspection", marker = "python_full_version < '3.14'" },
-    { name = "uvicorn", marker = "python_full_version < '3.14' and sys_platform != 'emscripten'" },
+    { name = "anyio" },
+    { name = "httpx" },
+    { name = "httpx-sse" },
+    { name = "jsonschema" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "python-multipart" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "sse-starlette" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+    { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ba/93/0142dc84a666daf8ad51a34268f34c12fd6fda4f3810c4be2504eecc8212/mcp-1.30.0.tar.gz", hash = "sha256:445414625fce5c295faa505bb11bacece661ab6f4028d57c935db57820b7a3e4", size = 680511, upload-time = "2026-09-07T14:34:15.845Z" }
 wheels = [
