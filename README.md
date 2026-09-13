@@ -25,6 +25,14 @@ Running WSL commands from PowerShell (`wsl -d Ubuntu-22.04 -- bash -lc "..."`) h
 - **`bash_mcp_status` extended** with `audit.{max_bytes, backup_count, backups_present}` and `concurrency.{max_concurrent, active}` fields.
 - 95 tests passing (up from 84).
 
+## What's new in v0.7.1
+
+- **`bash_mcp_audit_read(backup_index, max_entries?, tool_filter?)`** — closes the v0.7 gzip one-way archival caveat. Transparently decompresses `audit.jsonl.N.gz` backups in addition to plaintext. Returns a stable `{backup_index, path, format, entries, returned}` object. Audited as `tool="bash_mcp_audit_read"`.
+- **Cleanup** — deleted stray `infra/install.sh.before-addendum` (untracked, never committed).
+- 12 tools total (up from 11). 289 tests passing (up from 274). 86 smoke cases (up from 78).
+
+All changes are non-breaking. v0.7.0 callers see zero behavior change.
+
 ## What's new in v0.7.0
 
 - **`bash_mcp_classify(command)` denylist explainer** — read-only tool that returns `{class, matched_pattern, pattern_index, hint_with_dangerous_false, hint_with_dangerous_true, would_execute, would_execute_with_dangerous_true, audit_id}`. Use BEFORE `bash_run_command` if you're unsure whether a command will be rejected. Saves a round-trip and gives the exact regex that would fire.
@@ -65,6 +73,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
 | `bash-mcp_session_destroy(session_id)` | Destroy a session, free memory. |
 | `bash-mcp_session_list()` | List active sessions, most-recently-used first. |
 | `bash-mcp_classify(command)` | Read-only denylist explainer; returns `{class, matched_pattern, hint, would_execute, ...}`. v0.7. |
+| `bash-mcp_audit_read(backup_index, max_entries?, tool_filter?)` | Read entries from a rotated audit backup (plaintext or gzip). v0.7.1. |
 
 All tools are namespaced as `bash-mcp_*` in MiniMax Code.
 
@@ -443,7 +452,7 @@ cd /home/jbecerra/projects/bash-mcp
 # Then from Windows PowerShell, run the printed `mavis mcp create` command.
 ```
 
-## Out of scope (deferred to v0.8+)
+## Out of scope (deferred to v0.9+)
 
 **Already shipped:**
 
@@ -459,7 +468,7 @@ cd /home/jbecerra/projects/bash-mcp
 - **Session snapshots** (`fork` a session at a point in time) — useful for branching workflows.
 - **Cross-session env sharing** — share a named env dict across multiple sessions.
 - **Web UI for browsing the audit log** — minimal Flask/FastAPI page on a separate port with filters by tool / classification / time.
-- **Audit log compression** — gzip-on-rotation when disk usage > 500 MB. Tradeoff: log shipping tools (Loki, etc.) prefer JSONL over gzip; this would gate shipping.
+- ~~**Audit log compression**~~ — **shipped in v0.7.1** via `bash_mcp_audit_read` (closes the gzip one-way archival caveat). See "What's new in v0.7.1". Remaining: gzip-on-rotation above a higher threshold + audit log shipping (Loki/CloudWatch) still deferred to v0.9+.
 - **Audit log shipping** — Loki push API, CloudWatch Logs, or local syslog. Optional, gated by config.
 - **Per-project allowlists** (`.bash-mcp.toml` in repo root) — extend the global `ALLOWED_CWD_ROOTS` with per-repo overrides. Would be useful for monorepos with `frontend/`, `backend/`, `data/` subdirs.
 - **A formal threat-model document** — STRIDE-style analysis of the audit log, the hook, the denylist, and the session lifecycle.

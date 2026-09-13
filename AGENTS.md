@@ -173,3 +173,24 @@ Pattern (all three follow it):
 3. Behavior guarded by `if <NAME> > 0:`.
 4. `bash_mcp_status` surfaces the constant + a `_enabled` flag.
 5. Document the env var + semantics in SKILL.md and CHANGELOG.
+
+
+## v0.7.1 (added 2026-09-13)
+
+Patch release. Adds `bash_mcp_audit_read` (12th tool) and cleans up a stray file.
+
+### bash_mcp_audit_read
+
+Read audit log entries from a backup. Closes the v0.7 gzip one-way archival caveat by transparently decompressing `.jsonl.N.gz`. Returns a stable `{backup_index, path, format ("plaintext"|"gzip"), entries, returned}` object so the contract holds whether there are 0, 1, or many entries (the FastMCP unwrap-single-element-list bug from v0.7.0 taught us to always wrap).
+
+Audited as `tool="bash_mcp_audit_read" outcome="READ"`. Reads are themselves logged.
+
+### Cleanup
+
+Deleted `infra/install.sh.before-addendum` (untracked, never in git history). Safe to delete; not referenced anywhere.
+
+### v0.7.1 test layout
+
+- `test_audit_read.py` (12) — unit, no live server.
+- `tests/test_e2e.py` (+3) — live-server round-trip for the new tool.
+- `infra/scripts/smoke-v07.py` (+8) — hot-test additions.

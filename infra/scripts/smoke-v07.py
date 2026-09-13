@@ -91,8 +91,8 @@ def main():
     section("bash_mcp_status")
     # ============================================================
     status = call_tool(sid, "bash_mcp_status")
-    check("version is 0.7.0", status.get("version") == "0.7.0", f"got {status.get('version')}")
-    check("11 tools registered", len(status.get("tools", [])) == 11, f"got {len(status.get('tools', []))}")
+    check("version is 0.7.1", status.get("version") == "0.7.1", f"got {status.get('version')}")
+    check("12 tools registered", len(status.get("tools", [])) == 12, f"got {len(status.get('tools', []))}")
     check("tools include bash_mcp_classify", "bash_mcp_classify" in status["tools"])
     check("tools include 4 session tools",
           all(t in status["tools"] for t in [
@@ -307,6 +307,39 @@ def main():
     check("bash_list_binaries returns a list",
           isinstance(r, list) and len(r) > 0,
           f"type={type(r).__name__}, len={len(r) if isinstance(r, list) else 'n/a'}")
+
+    # ============================================================
+    section("bash_mcp_audit_read (v0.7.1)")
+    # ============================================================
+    r = call_tool(sid, "bash_mcp_audit_read", {"backup_index": 0})
+    check("audit_read(0) returns entries list",
+          isinstance(r.get("entries"), list) and len(r["entries"]) > 0,
+          f"got {r}")
+    check("audit_read(0) format is plaintext or gzip",
+          r.get("format") in {"plaintext", "gzip"},
+          f"format={r.get('format')}")
+    check("audit_read(0) backup_index is 0",
+          r.get("backup_index") == 0,
+          f"got {r.get('backup_index')}")
+    check("audit_read(0) has audit_id",
+          isinstance(r.get("audit_id"), str) and len(r["audit_id"]) > 0)
+    check("audit_read(0) has path string",
+          isinstance(r.get("path"), str) and "audit.jsonl" in r.get("path", ""))
+
+    r2 = call_tool(sid, "bash_mcp_audit_read",
+                   {"backup_index": 0, "tool_filter": "bash_mcp_classify"})
+    check("audit_read tool_filter='bash_mcp_classify' returns only matching entries",
+          isinstance(r2.get("entries"), list) and all(
+              e.get("tool") == "bash_mcp_classify" for e in r2["entries"]
+          ),
+          f"non-matching entries in result")
+    check("audit_read tool_filter has at least 1 entry (we called classify earlier)",
+          len(r2.get("entries", [])) >= 1)
+
+    r3 = call_tool(sid, "bash_mcp_audit_read", {"backup_index": 999})
+    check("audit_read(999) returns BACKUP_NOT_FOUND error",
+          "error" in r3 and r3["error"].get("code") == "BACKUP_NOT_FOUND",
+          f"got {r3}")
 
     # ============================================================
     section("audit log inspection")

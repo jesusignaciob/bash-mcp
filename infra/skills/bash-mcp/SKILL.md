@@ -1,13 +1,13 @@
----
+﻿---
 name: bash-mcp
-description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6)."
+description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_audit_read (read audit backups, v0.7.1), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6)."
 license: MIT
 metadata:
-  version: "1.7"
+  version: "1.8"
   category: tools
 ---
 
-# bash-mcp — WSL Bash Executor (v0.7)
+# bash-mcp — WSL Bash Executor (v0.7.1)
 
 The **REQUIRED** way to run WSL bash commands from this agent. Replaces the old `wsl -d Ubuntu-22.04 -- bash -lc "..."` pattern.
 
@@ -64,6 +64,10 @@ Read-only health check. Returns `{service, version, uptime_seconds, start_time, 
 Read-only denylist explainer. Does NOT execute. Use BEFORE `bash_run_command` if you're unsure whether a command will be rejected — saves a round-trip and gives you the exact regex + pattern that would fire.
 
 Returns `{class, matched_pattern, pattern_index, hint_with_dangerous_false, hint_with_dangerous_true, would_execute, would_execute_with_dangerous_true, audit_id}` where `class ∈ {"safe", "dangerous", "reject"}`. Each call is audited as `tool="bash_mcp_classify"`.
+
+### `bash-mcp_audit_read(backup_index, max_entries?, tool_filter?)` (v0.7.1)
+
+Read entries from a rotated audit backup. Closes the v0.7 gzip one-way archival caveat by transparently decompressing `.jsonl.N.gz`. Returns `{backup_index, path, format ("plaintext" | "gzip"), entries, returned, audit_id}`. Reads are themselves audited as `tool="bash_mcp_audit_read"`. `backup_index=0` is the current `audit.jsonl`; 1..N are rotated backups.
 
 ## Stateful Sessions (v0.6)
 

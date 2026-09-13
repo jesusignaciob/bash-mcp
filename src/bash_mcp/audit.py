@@ -15,6 +15,7 @@ Location: $XDG_DATA_HOME/bash-mcp/audit.jsonl  (default ~/.local/share/bash-mcp/
 from __future__ import annotations
 
 import json
+import gzip
 import os
 import sys
 import threading
@@ -132,7 +133,7 @@ def _gzip_pass(path: Path) -> None:
     """
     if GZIP_THRESHOLD_BYTES <= 0:
         return
-    import gzip  # lazy import — only paid by users who enable gzip
+    # gzip already imported at module top
 
     for n in range(1, BACKUP_COUNT + 1):
         backup = path.with_suffix(path.suffix + f".{n}")
@@ -165,6 +166,79 @@ def _gzip_pass(path: Path) -> None:
                     gz_path.unlink()
                 except OSError:
                     pass
+
+
+def read_backup_path(n: int) -> Path | None:
+    """Resolve backup N: prefer .jsonl.N.gz, fall back to .jsonl.N.
+
+    Args:
+        n: 0 = current `audit.jsonl`; 1..N = rotated backups.
+
+    Returns:
+        Path to the existing file, or None if no such backup.
+    """
+    p = _ensure_path()
+    if n == 0:
+        return p if p.exists() else None
+    for suffix in (f".{n}.gz", f".{n}"):
+        candidate = p.with_suffix(p.suffix + suffix)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def read_backup(
+    n: int,
+    max_entries: int = 1000,
+    tool_filter: str | None = None,
+) -> list[dict]:
+    """Read audit entries from backup N.
+
+    Args:
+        n: 0 = current; 1..BACKUP_COUNT = rotated. Returns [] if no
+            such backup exists.
+        max_entries: hard cap (default 1000). Stops reading after this
+            many lines even if more are available.
+        tool_filter: optional; only include entries whose "tool" matches.
+
+    Returns:
+        List of decoded JSON dicts, in file order (oldest first).
+
+    Decompresses .gz transparently. Fail-soft: malformed lines are
+    skipped (with a stderr warning) rather than raising — an audit log
+    reader must never block other operations.
+    """
+    path = read_backup_path(n)
+    if path is None:
+        return []
+    is_gz = path.suffix == ".gz"
+    if is_gz:
+        opener = gzip.open
+    else:
+        opener = lambda p, mode: open(p, mode, encoding="utf-8")
+    entries: list[dict] = []
+    try:
+        with opener(path, "rt") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError as e:
+                    print(
+                        f"[bash-mcp audit] WARN: malformed line in {path.name}: {e}",
+                        file=sys.stderr,
+                    )
+                    continue
+                if tool_filter is not None and entry.get("tool") != tool_filter:
+                    continue
+                entries.append(entry)
+                if len(entries) >= max_entries:
+                    break
+    except OSError as e:
+        print(f"[bash-mcp audit] WARN: could not read {path}: {e}", file=sys.stderr)
+    return entries
 
 
 def new_audit_id() -> str:

@@ -5,6 +5,32 @@ All notable changes to **bash-mcp** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.7.1] — 2026-09-13
+
+### Added
+
+- **`bash_mcp_audit_read(backup_index, max_entries?, tool_filter?)`** (`server.py`) — closes the v0.7 gzip one-way archival caveat. Transparently decompresses `audit.jsonl.N.gz` in addition to plaintext `audit.jsonl.N`. Returns `{backup_index, path, format ("plaintext"|"gzip"), total_in_file, returned, entries: [...]}`. Audited as `tool="bash_mcp_audit_read" outcome="READ"`. Wraps result in an object so the contract holds for any number of entries (the FastMCP unwrap-single-element-list bug from v0.7.0 taught us to always wrap).
+- **Version bump** — `__version__` in `src/bash_mcp/__init__.py` bumped from `0.7.0` to `0.7.1`.
+
+### Removed
+
+- **`infra/install.sh.before-addendum`** — stray backup file from before v0.7. Untracked, never in git history. Safe to delete; not referenced anywhere.
+
+### Tests
+
+- **289 passing** (up from 274).
+- New `tests/test_audit_read.py` — 12 unit tests covering plaintext + gzipped read-back, malformed-line skipping, max_entries cap, tool_filter, and corrupted .gz fail-soft.
+- `tests/test_e2e.py` — 3 new live-server tests (`test_audit_read_e2e_current`, `_tool_filter`, `_nonexistent_returns_error`); `test_session_list_e2e` and `test_session_list_tool_returns_summaries` updated for the v0.7.1 `{sessions, count}` object contract.
+- `infra/scripts/smoke-v07.py` — 8 new hot-test sections (3 audit_read + 5 status/version checks bumped from v0.7.0 → v0.7.1).
+
+### Backwards compatibility
+
+- All v0.7.0 callers see zero behavior change.
+- 12 tools total (up from 11). `bash_mcp_audit_read` is purely additive.
+- Audit log format unchanged. New audit entries (`tool="bash_mcp_audit_read" outcome="READ"`) are added when the new tool is called.
+
 ## [Unreleased] — agent-side system_prompt addendum
 
 ### Added
