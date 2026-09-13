@@ -605,3 +605,44 @@ def test_session_run_tool_state_lost_on_simulated_restart():
         f"expected fresh subprocess to not see session, but it did.\n"
         f"stdout={r.stdout}\nstderr={r.stderr}"
     )
+
+
+# --- D: per-project allowlist via .bash-mcp.toml (v0.8) ---
+
+from bash_mcp import project_allowlist  # noqa: E402
+
+
+def test_session_create_uses_project_allowlist(tmp_path: Path) -> None:
+    """Session create respects the project allowlist (extend mode).
+
+    Drop a TOML at tmp_path that allows tmp_path via extend mode,
+    then create a session with cwd=tmp_path. Should succeed.
+    """
+    (tmp_path / ".bash-mcp.toml").write_text(
+        'mode = "extend"\nallowed_roots = ["."]\n',
+        encoding="utf-8",
+    )
+    project_allowlist.clear_cache()
+    state = sessions.create(name="pa-session", cwd=str(tmp_path))
+    assert state.cwd == str(tmp_path.resolve())
+    assert sessions.active_count() == 1
+
+
+def test_session_create_rejected_by_project_replace_lockout(tmp_path: Path) -> None:
+    """Session create fails when replace-mode allowlist excludes the cwd.
+
+    Drop a TOML at tmp_path with replace mode that only allows a
+    sibling. Creating a session at tmp_path must raise
+    InvalidCwdError even though tmp_path itself is under HOME (the
+    global allowlist) — the project replace mode drops the global.
+    """
+    sibling = tmp_path / "allowed-sibling"
+    sibling.mkdir()
+    (tmp_path / ".bash-mcp.toml").write_text(
+        f'mode = "replace"\nallowed_roots = ["{sibling.resolve()}"]\n',
+        encoding="utf-8",
+    )
+    project_allowlist.clear_cache()
+    with pytest.raises(InvalidCwdError) as ei:
+        sessions.create(name="pa-reject", cwd=str(tmp_path))
+    assert "not under an allowed root" in str(ei.value)

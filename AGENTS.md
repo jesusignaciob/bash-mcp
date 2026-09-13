@@ -195,3 +195,67 @@ Deleted `infra/install.sh.before-addendum` (untracked, never in git history). Sa
 - `test_audit_read.py` (12) — unit, no live server.
 - `tests/test_e2e.py` (+3) — live-server round-trip for the new tool.
 - `infra/scripts/smoke-v07.py` (+8) — hot-test additions.
+
+## v0.8 (added 2026-09-13)
+
+Per-project cwd allowlists via ``.bash-mcp.toml``. Each project can drop a
+TOML file at the repo root (or any ancestor) and bash-mcp picks it up for
+calls whose cwd lives under that directory. Zero behavior change when no
+file is present.
+
+### v0.8 design
+
+- **New module: `src/bash_mcp/project_allowlist.py`.** Public surface:
+  `load(start_dir) -> ProjectAllowlist | None`,
+  `effective_allowed_roots(start_dir, global_roots) -> tuple[str, ...] | None`,
+  `clear_cache()` (test helper), `ProjectAllowlist` dataclass.
+- **Walk-up semantics.** Starting from the call's resolved cwd, walk up
+  parent dirs until the first ``.bash-mcp.toml`` is found. Stop at
+  ``$HOME`` or filesystem root. Capped at 32 hops as a safety belt.
+- **Two modes.**
+
+  - ``extend`` (default) — concatenate global + project, de-duplicated.
+  - ``replace`` — return ONLY the project's roots. Empty list is a
+    deliberate lockout (returns ``()``, not ``None``).
+
+- **Fail-soft.** Malformed TOML, unknown mode, non-list
+  ``allowed_roots`` → stderr warning + fall back to global. Never crashes.
+- **TOML library.** ``tomli>=2.0`` on Python < 3.11; ``tomllib`` stdlib
+  on 3.11+. Added as a direct dependency in ``pyproject.toml``.
+- **Cache.** Module-level ``dict[(start_dir_str, mtime_ns), ProjectAllowlist | None]``
+  for the lifetime of the bash-mcp process. Editing the TOML
+  invalidates the cached entry automatically (mtime changes).
+  Negative results (no file found) are cached too with ``mtime_ns == -1``.
+- **executor + sessions integration.** `_is_under_allowed_root` gets an
+  optional ``effective_roots`` parameter (defaults to ``ALLOWED_CWD_ROOTS``).
+  Both `executor.run()` and `sessions._resolve_cwd()` compute
+  ``effective_allowed_roots(cwd, ALLOWED_CWD_ROOTS)`` before the check.
+  Zero behavior change when no ``.bash-mcp.toml`` is found (the helper
+  returns ``None`` and the global roots are used unchanged).
+- **Server hint.** `_hint_for_invalid_cwd` mentions the project allowlist
+  source + roots when one is in effect (so the user understands why
+  ``INVALID_CWD`` is reported even though the path is under a global
+  root).
+- **No new MCP tool.** v0.8 is config-only; the tool count stays at 12.
+
+### v0.8 test layout
+
+- `tests/test_project_allowlist.py` (+11) — walk-up, cache invalidation,
+  extend/replace/empty-lockout, fail-soft on malformed TOML / unknown
+  mode / non-list `allowed_roots`.
+- `tests/test_executor.py` (+3) — extend allows, replace drops global,
+  no-TOML falls back to global.
+- `tests/test_sessions.py` (+2) — session_create accepts project root;
+  session_create rejected by replace-mode lockout.
+- `infra/scripts/smoke-v07.py` (+1 section, ~3 cases) — live-server
+  per-project allowlist round-trip.
+
+### v0.8 deployment notes
+
+- No install.sh change. The feature is opt-in: projects add a
+  ``.bash-mcp.toml`` themselves; nothing is auto-created.
+- No schema-validation library. We use stdlib ``tomllib`` / ``tomli``
+  directly.
+- The cache is process-lifetime only. Restart the bash-mcp service
+  (`systemctl --user restart bash-mcp.service`) to drop stale entries
+  after adding/removing TOMLs in dirs that were never queried before.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -148,3 +149,71 @@ def test_cwd_allowlist(cwd: str, expect_ok: bool) -> None:
     except (BashNotFoundError, OSError):
         # Unrelated failures are fine for the allowlist test.
         pass
+
+
+# --- C: per-project allowlist via .bash-mcp.toml (v0.8) ---
+
+from bash_mcp import project_allowlist  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clean_pa_cache():
+    """Drop the project_allowlist module cache around every test."""
+    project_allowlist.clear_cache()
+    yield
+    project_allowlist.clear_cache()
+
+
+def test_project_allowlist_extend_mode_adds_root(tmp_path: Path) -> None:
+    """extend mode: a project TOML extends the global allowlist.
+
+    We create a dir outside the global allowlist, drop a TOML that
+    allows it, and verify run() accepts it (under extend mode).
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as sandbox:
+        sandbox_p = Path(sandbox).resolve()
+        # Drop a TOML that allows this sandbox under extend mode.
+        (sandbox_p / ".bash-mcp.toml").write_text(
+            'mode = "extend"\nallowed_roots = ["."]\n',
+            encoding="utf-8",
+        )
+        # run() from this dir should succeed.
+        r = run("pwd", cwd=str(sandbox_p))
+        assert r.exit_code == 0
+        assert r.stdout.strip() == str(sandbox_p)
+
+
+def test_project_allowlist_replace_mode_drops_global(tmp_path: Path) -> None:
+    """replace mode: a project TOML REPLACES the global allowlist.
+
+    Even though cwd is under HOME (allowed globally), replace mode
+    with an unrelated allowed_roots must REJECT it.
+    """
+    # Drop a TOML at tmp_path that allows only a sibling dir.
+    sibling = tmp_path / "sibling"
+    sibling.mkdir()
+    (tmp_path / ".bash-mcp.toml").write_text(
+        f'mode = "replace"\nallowed_roots = ["{sibling.resolve()}"]\n',
+        encoding="utf-8",
+    )
+    # tmp_path itself is under HOME (= /home/jbecerra, a global root),
+    # but replace mode should drop the global and only allow the sibling.
+    with pytest.raises(InvalidCwdError) as ei:
+        run("echo x", cwd=str(tmp_path))
+    assert "not under an allowed root" in str(ei.value)
+
+
+def test_project_allowlist_not_found_falls_back_to_global(tmp_path: Path) -> None:
+    """No TOML anywhere up the tree -> fall back to global allowlist.
+
+    We use a path under /tmp (always in global allowlist) with no
+    TOML in /tmp or any ancestor, and verify the call succeeds.
+    """
+    deep = tmp_path / "no_toml_here" / "deep"
+    deep.mkdir(parents=True)
+    # /tmp is in global allowlist; no TOML should appear on the walk
+    # up because pytest tmp_path lives under /tmp/pytest-of-*.
+    r = run("echo fallback-ok", cwd=str(deep))
+    assert r.exit_code == 0
+    assert "fallback-ok" in r.stdout

@@ -28,6 +28,8 @@ class Class(str, Enum):
 #                           tee /dev/sd*, shred /etc, cat|cp|mv → /dev/sd*,
 #                           rsync --delete, apt remove/purge/autoremove,
 #                           pip uninstall, npm uninstall -g)
+#   2026-09-13 (v0.8)  \u2014 no changes (per-project allowlist is config-only,
+#                          not a new attack surface)
 
 
 # Hard denylist — never bypassed even with dangerous=true.

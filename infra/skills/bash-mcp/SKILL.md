@@ -1,13 +1,13 @@
 ﻿---
 name: bash-mcp
-description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_audit_read (read audit backups, v0.7.1), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6)."
+description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_audit_read (read audit backups, v0.7.1), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6). Per-project cwd allowlists via `.bash-mcp.toml` (v0.8): drop a TOML in your repo root to extend or replace the global allowlist."
 license: MIT
 metadata:
-  version: "1.8"
+  version: "1.9"
   category: tools
 ---
 
-# bash-mcp — WSL Bash Executor (v0.7.1)
+# bash-mcp — WSL Bash Executor (v0.8.0)
 
 The **REQUIRED** way to run WSL bash commands from this agent. Replaces the old `wsl -d Ubuntu-22.04 -- bash -lc "..."` pattern.
 
@@ -228,3 +228,24 @@ bash-mcp_session_destroy({session_id})
 - Logs: `journalctl --user -u bash-mcp.service -f` or `screen -r bash-mcp`.
 - Audit: `tail -f ~/.local/share/bash-mcp/audit.jsonl`.
 - Deploy a fresh WSL/Windows setup: `./infra/install.sh` from the repo root.
+
+## Per-project allowlists via `.bash-mcp.toml` (v0.8)
+
+Projects can drop a `.bash-mcp.toml` at the repo root (or any ancestor) to override the global `ALLOWED_CWD_ROOTS` for calls whose cwd lives under that directory.
+
+```toml
+# mode is optional. Defaults to "extend".
+mode = "extend"   # or "replace"
+
+# required: list of paths the project\'s cwds may resolve under.
+allowed_roots = [".", "frontend", "backend", "/srv/shared-cache"]
+```
+
+- **`extend`** (default) — merge the project's `allowed_roots` with the global list (de-duplicated).
+- **`replace`** — replace the global list with the project's roots. Empty list = deliberate lockout (no cwd is allowed).
+
+bash-mcp walks up from the call's cwd until it finds the first `.bash-mcp.toml` (or hits `$HOME` / filesystem root; capped at 32 hops). The result is cached for the process lifetime, keyed on `(start_dir, mtime_ns)` so editing the TOML invalidates the cache automatically.
+
+**Failure modes are fail-soft** — malformed TOML, unknown mode, or non-list `allowed_roots` produce a stderr warning and bash-mcp falls back to the global allowlist. No crashes.
+
+**Zero behavior change when no file is present.** The feature is opt-in per project; no install.sh change.

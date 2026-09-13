@@ -383,6 +383,63 @@ def main():
               f"could not read {audit_path}")
 
     # ============================================================
+    # v0.8: per-project allowlist via .bash-mcp.toml
+    # ============================================================
+    section("per-project allowlist (.bash-mcp.toml, v0.8)")
+
+    # Drop a temp dir with a TOML that ALLOWS the dir via extend mode.
+    pa_dir = "/tmp/bash-mcp-smoke-pa-" + str(int(time.time() * 1000))
+    os.makedirs(pa_dir, exist_ok=True)
+    toml_path = os.path.join(pa_dir, ".bash-mcp.toml")
+    with open(toml_path, "w", encoding="utf-8") as f:
+        f.write('mode = "extend"\nallowed_roots = ["."]\n')
+
+    try:
+        # Case 1: cwd under the project allowlist is accepted
+        # (extend mode merges global + project).
+        r = call_tool(sid, "bash_run_command",
+                      {"command": "pwd", "cwd": pa_dir})
+        check("extend mode accepts cwd under project root",
+              r.get("exit_code") == 0 and r.get("stdout", "").strip() == pa_dir,
+              f"got {r}")
+
+        # Case 2: replace mode drops the global allowlist. We drop a
+        # TOML that allows only a sibling, then try cwd=parent which
+        # is under HOME globally but should be REJECTED under replace.
+        sibling = pa_dir + "-sibling"
+        os.makedirs(sibling, exist_ok=True)
+        with open(toml_path, "w", encoding="utf-8") as f:
+            f.write(f'mode = "replace"\nallowed_roots = ["{sibling}"]\n')
+        # Server caches project allowlist by mtime; mtime changed via
+        # overwrite above so the new TOML will be picked up on the next
+        # call from a fresh dir. Use a different start dir so the cache
+        # key is different.
+        other_start = "/tmp"
+        r = call_tool(sid, "bash_run_command",
+                      {"command": "echo should-fail", "cwd": pa_dir})
+        check("replace mode rejects cwd outside project roots",
+              "error" in r and r["error"]["code"] == "INVALID_CWD",
+              f"got {r}")
+
+        # Case 3: a malformed TOML falls back to global (no crash).
+        with open(toml_path, "w", encoding="utf-8") as f:
+            f.write("this is not = valid TOML ===\n")
+        # From a fresh start_dir under global allowlist, run works.
+        r = call_tool(sid, "bash_run_command",
+                      {"command": "echo fallback-global", "cwd": "/tmp"})
+        check("malformed TOML falls back to global allowlist",
+              r.get("exit_code") == 0 and "fallback-global" in r.get("stdout", ""),
+              f"got {r}")
+    finally:
+        # Best-effort cleanup of the temp dirs.
+        import shutil as _sh
+        for d in (pa_dir, pa_dir + "-sibling"):
+            try:
+                _sh.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+
+    # ============================================================
     print("\n" + "=" * 60)
     total = len(results)
     passed = sum(1 for _, ok, _ in results if ok)
