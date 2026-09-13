@@ -412,6 +412,7 @@ def bash_mcp_status() -> dict[str, Any]:
             "bash_which",
             "bash_mcp_status",
             "bash_mcp_classify",
+            "bash_mcp_audit_read",
             "bash_mcp_session_create",
             "bash_mcp_session_run",
             "bash_mcp_session_destroy",
@@ -806,6 +807,75 @@ def bash_mcp_session_list() -> dict[str, Any]:
     """
     items = session_list_active()
     return {"sessions": items, "count": len(items)}
+
+
+@mcp.tool
+def bash_mcp_audit_read(
+    backup_index: int = 0,
+    max_entries: int = 1000,
+    tool_filter: str | None = None,
+) -> dict[str, Any]:
+    """Read audit log entries from a backup.
+
+    Closes the v0.7 gzip one-way archival caveat: transparently decompresses
+    `audit.jsonl.N.gz` backups in addition to plaintext `audit.jsonl.N`.
+
+    Args:
+        backup_index: 0 = current `audit.jsonl`; 1..N = rotated backup N
+            (most recent is 1, oldest kept is `BACKUP_COUNT`).
+        max_entries: hard cap on returned list (default 1000). Read stops
+            after this many matching entries.
+        tool_filter: optional tool name to filter by (e.g. "bash_run_command",
+            "bash_mcp_classify"). Exact match, case-sensitive.
+
+    Returns:
+        {backup_index, path, format ("plaintext" | "gzip"),
+         total_in_file, returned, entries: [...]}
+
+        On non-existent backup_index: {error: {code: "BACKUP_NOT_FOUND", ...}}
+
+    Audited as `tool="bash_mcp_audit_read" outcome="READ"`.
+    """
+    audit_id = audit.new_audit_id()
+
+    path = audit.read_backup_path(backup_index)
+    if path is None:
+        return make_error_response(
+            code="BACKUP_NOT_FOUND",
+            message=f"No audit backup with index {backup_index}.",
+            hint=(
+                f"backup_index must be 0 (current) or 1..{audit.BACKUP_COUNT}. "
+                "Check bash_mcp_status().audit.backups_present for the list of existing backups."
+            ),
+            audit_id=audit_id,
+        )
+
+    entries = audit.read_backup(
+        backup_index, max_entries=max_entries, tool_filter=tool_filter
+    )
+    fmt = "gzip" if path.suffix == ".gz" else "plaintext"
+    audit.log({
+        "ts": audit_id.split("-")[0] if "-" in audit_id else "",
+        "audit_id": audit_id,
+        "tool": "bash_mcp_audit_read",
+        "args": {
+            "backup_index": backup_index,
+            "max_entries": max_entries,
+            "tool_filter": tool_filter,
+        },
+        "outcome": "READ",
+        "format": fmt,
+        "returned": len(entries),
+    })
+    return {
+        "backup_index": backup_index,
+        "path": str(path),
+        "format": fmt,
+        "total_in_file": len(entries),  # capped at max_entries
+        "returned": len(entries),
+        "entries": entries,
+        "audit_id": audit_id,
+    }
 
 
 def main() -> None:

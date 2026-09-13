@@ -116,6 +116,7 @@ def test_tools_list(sid: str) -> None:
     assert names == [
         "bash_check_env",
         "bash_list_binaries",
+        "bash_mcp_audit_read",
         "bash_mcp_classify",
         "bash_mcp_session_create",
         "bash_mcp_session_destroy",
@@ -250,7 +251,7 @@ def test_status(sid: str) -> None:
     assert isinstance(out["sessions"]["active"], int)
     assert out["sessions"]["active"] >= 0
     assert out["sessions"]["max_env_per_session"] >= 1
-    assert out["version"] == "0.7.0"
+    assert out["version"] == "0.7.1"
 
 
 def test_invalid_cwd_returns_hint(sid: str) -> None:
@@ -345,7 +346,12 @@ def test_session_list_e2e(sid: str) -> None:
     """Create 2 sessions, list, expect 2 entries (or at least our 2)."""
     a = _call_tool(sid, "bash_mcp_session_create", {"name": "e2e-list-a"})
     b = _call_tool(sid, "bash_mcp_session_create", {"name": "e2e-list-b"})
-    items = _call_tool(sid, "bash_mcp_session_list")
+    result = _call_tool(sid, "bash_mcp_session_list")
+    # v0.7.1 contract: {sessions: [...], count: N}
+    if isinstance(result, dict) and "sessions" in result:
+        items = result["sessions"]
+    else:
+        items = result
     assert isinstance(items, list)
     ids = {i["session_id"] for i in items}
     assert a["session_id"] in ids
@@ -421,7 +427,7 @@ def _v06_status_old(sid: str) -> None:
     assert isinstance(out["sessions"]["active"], int)
     assert out["sessions"]["active"] >= 0
     assert out["sessions"]["max_env_per_session"] >= 1
-    assert out["version"] == "0.7.0"
+    assert out["version"] == "0.7.1"
 
 
 
@@ -488,6 +494,44 @@ def test_session_ttl_status_reflects_default_e2e(sid: str) -> None:
 
 
 import os  # for test_classify_e2e_does_not_execute
+
+
+
+# --- v0.7.1 audit-read e2e tests ---
+
+
+def test_audit_read_e2e_current(sid: str) -> None:
+    """bash_mcp_audit_read(backup_index=0) returns a non-empty entries list."""
+    out = _call_tool(sid, "bash_mcp_audit_read", {"backup_index": 0})
+    assert "error" not in out
+    assert out["backup_index"] == 0
+    assert out["format"] in {"plaintext", "gzip"}
+    assert isinstance(out["entries"], list)
+    assert len(out["entries"]) > 0
+    assert "audit_id" in out
+    assert isinstance(out["returned"], int)
+
+
+def test_audit_read_e2e_tool_filter(sid: str) -> None:
+    """bash_mcp_audit_read with tool_filter returns only matching entries."""
+    out = _call_tool(sid, "bash_mcp_audit_read", {
+        "backup_index": 0, "tool_filter": "bash_run_command",
+    })
+    assert "error" not in out
+    assert isinstance(out["entries"], list)
+    for e in out["entries"]:
+        assert e.get("tool") == "bash_run_command", (
+            f"unexpected tool: {e.get('tool')!r}"
+        )
+
+
+def test_audit_read_e2e_nonexistent_returns_error(sid: str) -> None:
+    """bash_mcp_audit_read(backup_index=999) returns BACKUP_NOT_FOUND."""
+    out = _call_tool(sid, "bash_mcp_audit_read", {"backup_index": 999})
+    assert "error" in out
+    assert out["error"]["code"] == "BACKUP_NOT_FOUND"
+    assert "hint" in out["error"]
+
 
 @pytest.fixture
 def sid() -> str:

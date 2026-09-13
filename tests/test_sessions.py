@@ -481,7 +481,12 @@ def test_session_list_tool_returns_summaries():
     _list = _call("bash_mcp_session_list")
     _create(name="a")
     _create(name="b")
-    items = _list()
+    result = _list()
+    # v0.7.1 contract: {sessions: [...], count: N}
+    if isinstance(result, dict) and "sessions" in result:
+        items = result["sessions"]
+    else:
+        items = result
     assert len(items) == 2
     names = {i["name"] for i in items}
     assert names == {"a", "b"}
