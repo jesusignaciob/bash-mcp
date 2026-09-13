@@ -8,6 +8,7 @@
 #   - PreToolUse hook     → /mnt/c/Users/jesus/.minimax/agents/mavis/hooks/bash-mcp-redirect.md
 #   - Skill               → /mnt/c/Users/jesus/.mavis/skills/bash-mcp/{SKILL.md,_meta.json}
 #   - mcp.json entry      → /mnt/c/Users/jesus/.minimax/mcp/mcp.json (idempotent overwrite of bash-mcp)
+#   - Agent prompt rule   → mavis agent "mavis" (manual apply, see step [5/5])
 #
 # Flags:
 #   --dry-run    Print what would happen without making any changes.
@@ -55,7 +56,7 @@ echo "WSL home:  $WSL_USER_HOME"
 echo ""
 
 # 1. systemd unit
-echo "[1/4] systemd unit"
+echo "[1/5] systemd unit"
 run_or_print "mkdir"  mkdir -p ~/.config/systemd/user
 run_or_print "cp"     cp -f "$INFRA/systemd/bash-mcp.service" ~/.config/systemd/user/
 run_or_print "systemd" systemctl --user daemon-reload
@@ -66,7 +67,7 @@ run_or_print "systemd" systemctl --user restart bash-mcp.service
 
 # 2. PreToolUse hook
 echo ""
-echo "[2/4] PreToolUse hook"
+echo "[2/5] PreToolUse hook"
 HOOK_DST="$WSL_USER_HOME/.minimax/agents/mavis/hooks"
 run_or_print "mkdir"  mkdir -p "$HOOK_DST"
 run_or_print "cp"     cp -f "$INFRA/hooks/bash-mcp-redirect.md" "$HOOK_DST/"
@@ -76,7 +77,7 @@ run_or_print "cp"     cp -f "$INFRA/hooks/bash-mcp-redirect.js" "$HOOK_DST/"
 
 # 3. Skill
 echo ""
-echo "[3/4] Skill"
+echo "[3/5] Skill"
 SKILL_DST="$WSL_USER_HOME/.mavis/skills/bash-mcp"
 run_or_print "mkdir"  mkdir -p "$SKILL_DST"
 run_or_print "cp"     cp -f "$INFRA/skills/bash-mcp/SKILL.md" "$SKILL_DST/"
@@ -86,7 +87,7 @@ run_or_print "cp"     cp -f "$INFRA/skills/bash-mcp/_meta.json" "$SKILL_DST/"
 
 # 4. mcp.json entry (idempotent overwrite of bash-mcp only)
 echo ""
-echo "[4/4] mcp.json entry"
+echo "[4/5] mcp.json entry"
 WSL_IP=$(hostname -I | awk '{print $1}')
 MCP_JSON="$WSL_USER_HOME/.minimax/mcp/mcp.json"
 if [ "$DRY_RUN" = "1" ]; then
@@ -124,7 +125,61 @@ else:
 '
 fi
 
-# 5. Manual step for the mavis runtime registry (Windows-side; always printed)
+
+
+# 5. Agent system_prompt addendum (info-only step — see NOTES)
+#
+# The bash-mcp addendum (infra/system-prompt-addendum.md) is the canonical rule
+# text that the mavis agent should have appended to its system_prompt. The
+# installer does NOT auto-apply it: the mavis CLI on both WSL and Windows does
+# not expose an `agent update` subcommand (the WSL `mavis` is the IDE launcher,
+# the Windows `mavis.cmd` references a daemon/cli.js that is not bundled). The
+# apply is performed by the desktop mavis tool (`mavis agent update mavis ...`)
+# which the orchestrator (or the user) runs once per environment.
+#
+# This step:
+#   1. Reports whether the addendum file exists.
+#   2. Prints the canonical mavis agent update command for the user to run.
+#   3. Skips silently on --dry-run (only prints the path).
+echo ""
+echo "[5/5] Agent system_prompt addendum (info-only)"
+ADDENDUM="$INFRA/system-prompt-addendum.md"
+if [ ! -f "$ADDENDUM" ]; then
+    echo "  ! $ADDENDUM missing — installer is broken, file a bug"
+elif [ "$DRY_RUN" = "1" ]; then
+    echo "  [DRY-RUN] would report on $ADDENDUM and print manual command"
+else
+    ADDENDUM_BYTES=$(wc -c < "$ADDENDUM")
+    ADDENDUM_SHA=$(sha256sum "$ADDENDUM" | awk '{print $1}')
+    echo "  -> addendum ready: $ADDENDUM ($ADDENDUM_BYTES bytes, sha256:${ADDENDUM_SHA:0:16}...)"
+    echo ""
+    echo "  Manual apply (run once per environment with the desktop mavis tool):"
+    echo "    # 1. snapshot current system_prompt for rollback"
+    echo "    mavis agent get mavis --output json > /tmp/mavis-before.json"
+    echo ""
+    echo "    # 2. build the new system_prompt (current + addendum)"
+    echo "    python3 -c \'"
+    echo "      import json, pathlib"
+    echo "      cfg = json.loads(pathlib.Path("/tmp/mavis-before.json").read_text())"
+    echo "      sp  = cfg["response"]["agent"]["systemPrompt"]"
+    echo "      add = pathlib.Path("$ADDENDUM").read_text().rstrip()"
+    echo "      new = sp + "\\n\\n" + add"
+    echo "      pathlib.Path("/tmp/mavis-after.json").write_text(json.dumps({"
+    echo "          "agent_name": "mavis","
+    echo "          "system_prompt": new"
+    echo "      }))"
+    echo "      print(len(new), "chars")"
+    echo "    \'"
+    echo ""
+    echo "    # 3. apply (desktop mavis tool, not this CLI)"
+    echo "    mavis agent update mavis --system_prompt \"\$(cat /tmp/mavis-after.json | python3 -c \'import json,sys;print(json.load(sys.stdin)["system_prompt"])\')\""
+    echo ""
+    echo "  Idempotent: rerun after apply is a no-op if the addendum marker"
+    echo "  (\"Hard Tool Constraints — bash-mcp vs PowerShell\") already exists"
+    echo "  in the agent\'s system_prompt."
+fi
+
+# 6. Manual step for the mavis runtime registry (Windows-side; always printed)
 echo ""
 echo "============================================================"
 echo "Manual step required from Windows PowerShell (as the user):"

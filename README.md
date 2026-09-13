@@ -167,6 +167,7 @@ All via environment variables. Set in `~/.config/systemd/user/bash-mcp.service` 
 - PreToolUse hook → `~/.minimax/agents/mavis/hooks/bash-mcp-redirect.md`
 - Skill → `~/.mavis/skills/bash-mcp/`
 - mcp.json entry → `~/.minimax/mcp/mcp.json`
+- Agent system_prompt addendum → reported on stdout by `install.sh [5/5]`; applied manually once per environment via the desktop `mavis agent update mavis` tool (the WSL and Windows `mavis` CLIs do not expose the `agent` subcommand)
 
 The script also prints the one `mavis mcp create` command that must be
 run from Windows PowerShell (the runtime registry is Windows-side).
@@ -174,6 +175,35 @@ run from Windows PowerShell (the runtime registry is Windows-side).
 ```bash
 ./infra/install.sh
 ```
+
+### Agent integration
+
+bash-mcp ships an `infra/system-prompt-addendum.md` that, when applied, is
+appended to the `mavis` agent's `systemPrompt`. This is the agent-side guardrail
+that prevents the model from falling back to the `wsl -d ... -- bash -c "..."`
+pattern from PowerShell — even when the PreToolUse hook times out or the skill
+isn't auto-loaded.
+
+**Auto-apply is not supported.** The `mavis` CLI on WSL is the IDE launcher
+(`start` / `stop` / `status` only), and the Windows `mavis.cmd` references
+`daemon/cli.js` which is not bundled in current installs. Neither CLI exposes
+`agent update`. The apply must be performed by the desktop `mavis` MCP tool,
+which is what `install.sh [5/5]` documents on stdout.
+
+**Manual apply** (run once per environment, anywhere with the desktop tool):
+
+```text
+# install.sh prints the exact 3-step command (snapshot → build → apply)
+# on stdout. The canonical addendum is at infra/system-prompt-addendum.md.
+# Idempotent: rerun is a no-op if the marker substring is already in system_prompt.
+```
+
+**Why this lives in bash-mcp, not in the agent repo.** bash-mcp is the project
+that owns the `bash-mcp`-vs-`wsl-d` rule across all three sync points (skill,
+hook, mcp.json description). The system_prompt addendum is the fourth sync
+point — same wording, same escape hatch (`BASH_MCP_SKIP=1`), same cross-references
+to this README. Keeping all four together is what AGENTS.md means by "four places
+that must stay in sync".
 
 ## Operations
 
