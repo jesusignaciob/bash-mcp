@@ -17,10 +17,10 @@ A small MCP server that exposes WSL bash as a structured tool to MiniMax Code. S
 
 ```
 src/bash_mcp/
-├── server.py       # FastMCP server + 11 tools (@mcp.tool) — 6 stateless + 4 session + 1 classify (v0.6/v0.7)
+├── server.py       # FastMCP server + 12 tools (@mcp.tool) — 6 stateless + 4 session + 1 classify + 1 audit-read (v0.6/v0.7/v0.7.1)
 ├── executor.py     # subprocess.run wrapper, timeout, truncation, cwd allowlist, concurrency slot
 ├── safety.py       # classify(command) -> Class.{SAFE,DANGEROUS,REJECT}
-├── audit.py        # JSONL append-only logger + size-based rotation (v0.3) + opt-in gzip-on-rotation (v0.7)
+├── audit.py        # JSONL append-only logger + size-based rotation (v0.3) + opt-in gzip-on-rotation (v0.7) + read-back (v0.7.1)
 ├── discovery.py    # which / list_binaries (thread-pool based)
 ├── concurrency.py  # threading.BoundedSemaphore wrapper (v0.3)
 └── sessions.py     # stateful session registry (cwd + env); process-lifetime (v0.6) + opt-in auto-TTL janitor (v0.7)
@@ -31,6 +31,7 @@ tests/
 ├── test_audit_rotation.py    # 6 cases: rotation + concurrency (v0.3)
 ├── test_concurrency.py       # 5 cases: semaphore behavior (v0.3)
 ├── test_classify_tool.py     # 15 cases: explainer tool (v0.7)
+├── test_audit_read.py        # 12 cases: read-back (v0.7.1)
 ├── test_sessions_ttl.py      # 20 cases: auto-TTL / janitor (v0.7)
 ├── test_audit_gzip.py        # 14 cases: gzip-on-rotation (v0.7)
 ├── test_sessions.py          # 51 cases: registry + parsing + 4 tools (v0.6)
