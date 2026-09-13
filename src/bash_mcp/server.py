@@ -795,13 +795,17 @@ def bash_mcp_session_destroy(session_id: str) -> dict[str, Any]:
 
 
 @mcp.tool
-def bash_mcp_session_list() -> list[dict[str, Any]]:
+def bash_mcp_session_list() -> dict[str, Any]:
     """List active sessions (id, name, cwd, last_used_at, env_count).
 
     Returns:
-        Array of session summaries, most-recently-used first.
+        {sessions: [...], count: N} — array of session summaries,
+        most-recently-used first. Wrapped in an object (not a bare list)
+        so clients get a stable shape even when there is exactly one
+        session: some MCP transports unwrap single-element list responses.
     """
-    return session_list_active()
+    items = session_list_active()
+    return {"sessions": items, "count": len(items)}
 
 
 def main() -> None:
