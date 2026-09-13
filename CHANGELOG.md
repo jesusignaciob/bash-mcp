@@ -5,7 +5,18 @@ All notable changes to **bash-mcp** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] — agent-side system_prompt addendum
+
+### Added
+- **`infra/system-prompt-addendum.md`**: standalone markdown file containing the `bash-mcp`-vs-PowerShell-`wsl-d` rule that the mavis agent should follow in every session. Shipped as a first-class deployable alongside the skill, hook, and mcp.json entry.
+- **`install.sh [5/5]`**: new step that reports on the addendum file (existence + sha256) and prints the canonical 3-step manual apply command. Idempotent (substring check). The apply itself is **not auto-invoked** from `install.sh` because the `mavis` CLI on both WSL (IDE launcher) and Windows (`mavis.cmd` references an unbundled `daemon/cli.js`) does not expose an `agent` subcommand. Apply is performed by the desktop `mavis agent update mavis` MCP tool, which `install.sh [5/5]` documents on stdout.
+
+### Changed
+- **`AGENTS.md`**: project tree now includes `system-prompt-addendum.md`; "three places that must stay in sync" extended to **four** (now includes the system_prompt addendum).
+- **`README.md`**: `## Deploying` section adds a 5th bullet for the addendum; new `### Agent integration` sub-section documents why auto-apply is not supported and how to perform the manual apply.
+
+### Backwards compatibility
+- `install.sh [5/5]` is **purely additive**: it only reads `system-prompt-addendum.md`, prints info, and exits. It does not touch any deployed artifact, so reruns are safe even before the user has run the manual apply.
 
 ## [0.7.0] — 2026-09-12
 

@@ -50,6 +50,7 @@ infra/                                  # deployment artifacts (v0.2+)
 └── windows/                            # Windows-side deployment helpers
     ├── BashMcp-WSL-Bootstrap.xml       # Scheduled Task template (Logon trigger)
     └── install-task.ps1                # PowerShell installer for the Scheduled Task
+├── system-prompt-addendum.md         # canonical rule text for agent system_prompt (manual apply via desktop mavis tool; see README "Agent integration")
 ```
 
 ## Running
@@ -86,7 +87,7 @@ uv run pytest tests/ -v
 - **Changing the port**: update BOTH `infra/systemd/bash-mcp.service` `Environment=FASTMCP_SERVER_PORT=` AND `infra/update-ip.sh` `sed` pattern AND `mcp.json` `url` field. Use the [IANA dynamic range](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xml) (49152-65535) to minimize collision risk.
 - **Changing the WSL IP**: run `./infra/update-ip.sh`. It rewrites only the `bash-mcp` URL in `mcp.json` (and Cursor's, if present). Does not touch `semantic-memory` URLs.
 - **Deploying to a fresh WSL/Windows setup**: run `./infra/install.sh`. It idempotently copies the systemd unit, hook, skill, and mcp.json entry, and prints the manual `mavis mcp create` command for Windows PowerShell.
-- **Adding an enforcement layer**: update `C:\Users\jesus\.mavis\skills\bash-mcp\SKILL.md` AND `C:\Users\jesus\.minimax\agents\mavis\hooks\bash-mcp-redirect.md` AND the `description` field in `mcp.json` — three places that must stay in sync.
+- **Adding an enforcement layer**: update `C:\Users\jesus\.mavis\skills\bash-mcp\SKILL.md` (source: `infra/skills/bash-mcp/SKILL.md`) AND `C:\Users\jesus\.minimax\agents\mavis\hooks\bash-mcp-redirect.md` (source: `infra/hooks/bash-mcp-redirect.{md,js}`) AND the `description` field in `mcp.json` AND `infra/system-prompt-addendum.md` (deployed manually via the desktop mavis tool) — **four places** that share the same escape hatch name (`BASH_MCP_SKIP=1`) and cross-reference each other. Keep them in sync.
 
 ## Don't
 
