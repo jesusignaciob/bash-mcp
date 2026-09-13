@@ -91,7 +91,7 @@ def main():
     section("bash_mcp_status")
     # ============================================================
     status = call_tool(sid, "bash_mcp_status")
-    check("version is 0.7.1", status.get("version") == "0.7.1", f"got {status.get('version')}")
+    check("version is 0.8.0", status.get("version") == "0.8.0", f"got {status.get('version')}")
     check("12 tools registered", len(status.get("tools", [])) == 12, f"got {len(status.get('tools', []))}")
     check("tools include bash_mcp_classify", "bash_mcp_classify" in status["tools"])
     check("tools include 4 session tools",
