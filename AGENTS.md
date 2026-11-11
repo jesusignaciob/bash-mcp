@@ -23,7 +23,8 @@ src/bash_mcp/
 ├── audit.py        # JSONL append-only logger + size-based rotation (v0.3) + opt-in gzip-on-rotation (v0.7) + read-back (v0.7.1)
 ├── discovery.py    # which / list_binaries (thread-pool based)
 ├── concurrency.py  # threading.BoundedSemaphore wrapper (v0.3)
-└── sessions.py     # stateful session registry (cwd + env); process-lifetime (v0.6) + opt-in auto-TTL janitor (v0.7)
+├── sessions.py     # stateful session registry (cwd + env); process-lifetime (v0.6) + opt-in auto-TTL janitor (v0.7)
+└── session_store.py # SQLite persistence for sessions (v0.9) - survives a server restart
 tests/
 ├── test_safety.py            # 115 parametrized denylist cases
 ├── test_executor.py          # 27 cases: subprocess + cwd allowlist + Windows→WSL
@@ -35,6 +36,9 @@ tests/
 ├── test_sessions_ttl.py      # 20 cases: auto-TTL / janitor (v0.7)
 ├── test_audit_gzip.py        # 14 cases: gzip-on-rotation (v0.7)
 ├── test_sessions.py          # 51 cases: registry + parsing + 4 tools (v0.6)
+├── test_session_store.py     # 14 cases: SQLite store (v0.9)
+├── test_sessions_persistence.py # 15 cases: registry <-> store wiring (v0.9)
+├── test_server_persistence.py  # 4 cases: status + boot restore (v0.9)
 └── test_e2e.py               # 21 cases: live server round-trip (incl. 5 session e2e + 5 classify e2e)
 infra/                                  # deployment artifacts (v0.2+)
 ├── install.sh                          # idempotent deploy to fresh WSL/Windows
@@ -279,3 +283,55 @@ file is present.
 - The cache is process-lifetime only. Restart the bash-mcp service
   (`systemctl --user restart bash-mcp.service`) to drop stale entries
   after adding/removing TOMLs in dirs that were never queried before.
+
+## v0.9 (added 2026-11-10)
+
+### What shipped
+
+- **Disk persistence for sessions.** `bash_mcp_session_*` state is mirrored to a
+  SQLite store and restored when the server boots. A WSL reboot no longer
+  wipes the agent's cwd/env.
+- **New module `src/bash_mcp/session_store.py`.** Stdlib `sqlite3` only - no
+  new dependency. One row per session: `session_id`, `name`, `cwd`,
+  `env_json`, `created_at`, `last_used_at`.
+- **Opt out:** `BASH_MCP_SESSION_PERSIST=0` -> the pre-v0.9 process-lifetime
+  behaviour (nothing written, nothing read).
+- **Relocate:** `BASH_MCP_SESSION_DB_PATH` overrides the default
+  `$XDG_DATA_HOME/bash-mcp/sessions.db`.
+
+### Design rules
+
+- **One connection per operation.** FastMCP runs tools in a thread pool; a
+  shared connection would need locking. Opening per operation keeps the store
+  thread-safe for free. The write volume is tiny.
+- **Fail-soft, always.** A missing directory, an unwritable path or a corrupt
+  database degrades to "no persistence" (stderr warning) - it never raises
+  into a tool call. The session keeps working in memory.
+- **Persist outside `_LOCK`.** `sessions._LOCK` guards the in-memory registry
+  only; the SQLite write happens after the lock is released so a slow disk
+  cannot block other sessions.
+- **Restore drops what it cannot use.** A session whose `cwd` was deleted, or
+  is no longer under an allowed root, or whose `session_id` is malformed, is
+  deleted from the store instead of being restored. The env dict is truncated
+  to `MAX_ENV_VARS`.
+- **Idle eviction deletes the row too**, so an evicted session does not come
+  back on the next boot.
+
+### Wiring
+
+- `sessions.create()` / `apply_state_update()` -> `session_store.save(...)`.
+- `sessions.destroy()` / `_evict_idle()` -> `session_store.delete(...)`.
+- `sessions.restore()` -> re-populates `_SESSIONS`; called by
+  `server._bootstrap()`, which `main()` calls before serving.
+- `bash_mcp_status()` -> `sessions.persistence.{enabled, path,
+  persisted_sessions}`.
+
+### Test layout
+
+- `tests/conftest.py` - autouse fixture pointing `BASH_MCP_SESSION_DB_PATH` at
+  a per-test temp file, so the suite never touches the real store.
+- `tests/test_session_store.py` (+14) - round-trip, upsert, delete, disabled
+  flag, corrupt DB, unwritable path, path resolution.
+- `tests/test_sessions_persistence.py` (+15) - the registry <-> store wiring
+  and the restore rules.
+- `tests/test_server_persistence.py` (+4) - status payload + boot restore.

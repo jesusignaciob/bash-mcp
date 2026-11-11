@@ -1,6 +1,6 @@
 ﻿---
 name: bash-mcp
-description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_audit_read (read audit backups, v0.7.1), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6). Per-project cwd allowlists via `.bash-mcp.toml` (v0.8): drop a TOML in your repo root to extend or replace the global allowlist."
+description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_audit_read (read audit backups, v0.7.1), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6). Per-project cwd allowlists via `.bash-mcp.toml` (v0.8): drop a TOML in your repo root to extend or replace the global allowlist. v0.9: sessions are persisted to disk and restored when the server restarts."
 license: MIT
 metadata:
   version: "1.9"
@@ -77,7 +77,7 @@ Returns `{class, matched_pattern, pattern_index, hint_with_dangerous_false, hint
 
 Read entries from a rotated audit backup. Closes the v0.7 gzip one-way archival caveat by transparently decompressing `.jsonl.N.gz`. Returns `{backup_index, path, format ("plaintext" | "gzip"), entries, returned, audit_id}`. Reads are themselves audited as `tool="bash_mcp_audit_read"`. `backup_index=0` is the current `audit.jsonl`; 1..N are rotated backups.
 
-## Stateful Sessions (v0.6)
+## Stateful Sessions (v0.6, persisted to disk since v0.9)
 
 A session is a server-side container that keeps a `cwd` and an accumulated `env` dict across calls. Use sessions when you need to:
 
@@ -85,11 +85,11 @@ A session is a server-side container that keeps a `cwd` and an accumulated `env`
 - `export` a variable, run a tool that reads it, then run another tool that needs the same value — your env persists.
 - Avoid re-sending the same `cwd` / `env` on every call.
 
-**Important: sessions are process-lifetime.** A server restart wipes them. There is no auto-TTL; you must call `bash_mcp_session_destroy` when done.
+**Important: sessions are persisted to disk since v0.9.** They are restored when the server restarts, so a WSL reboot no longer wipes your cwd/env. There is no auto-TTL unless `BASH_MCP_SESSION_IDLE_TIMEOUT_S` is set; you should still call `bash_mcp_session_destroy` when done. Set `BASH_MCP_SESSION_PERSIST=0` on the server to get the old process-lifetime behaviour back.
 
 ### `bash_mcp_session_create(name?, cwd?) → {session_id, ...}`
 
-Create a new session. Optional human-readable `name` (≤64 chars) and optional starting `cwd` (must be under an allowed root — same rules as `bash_run_command`).
+Create a new session. Optional human-readable `name` (≤64 chars) and optional starting `cwd` (must be under an allowed root — same rules as `bash_run_command`). The session is written to the SQLite store immediately, and restored on the next server start.
 
 ### `bash_mcp_session_run(session_id, command, timeout_ms?, dangerous?) → result`
 

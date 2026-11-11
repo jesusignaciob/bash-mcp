@@ -17,6 +17,8 @@ import uuid
 import httpx
 import pytest
 
+from bash_mcp import __version__
+
 ENDPOINT = "http://127.0.0.1:54321/mcp/"
 
 
@@ -251,7 +253,7 @@ def test_status(sid: str) -> None:
     assert isinstance(out["sessions"]["active"], int)
     assert out["sessions"]["active"] >= 0
     assert out["sessions"]["max_env_per_session"] >= 1
-    assert out["version"] == "0.7.1"
+    assert out["version"] == __version__
 
 
 def test_invalid_cwd_returns_hint(sid: str) -> None:
@@ -427,7 +429,7 @@ def _v06_status_old(sid: str) -> None:
     assert isinstance(out["sessions"]["active"], int)
     assert out["sessions"]["active"] >= 0
     assert out["sessions"]["max_env_per_session"] >= 1
-    assert out["version"] == "0.7.1"
+    assert out["version"] == __version__
 
 
 

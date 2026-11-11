@@ -18,6 +18,32 @@ Running WSL commands from PowerShell (`wsl -d Ubuntu-22.04 -- bash -lc "..."`) h
 
 [MIT](LICENSE)
 
+## What's new in v0.9.0
+
+- **Sessions survive a server restart** — every `bash_mcp_session_*` mutation is
+  mirrored to a SQLite store (`~/.local/share/bash-mcp/sessions.db`, stdlib
+  `sqlite3`, no new dependency). On boot the server restores the sessions that
+  were alive before, so a WSL reboot no longer wipes the agent's cwd/env state.
+  - **New module `src/bash_mcp/session_store.py`** — one row per session
+    (`session_id`, `name`, `cwd`, `env`, `created_at`, `last_used_at`). One
+    connection per operation (FastMCP runs tools in a thread pool), so the store
+    is thread-safe without extra locking.
+  - **Fail-soft, always** — a missing directory, an unwritable path or a
+    corrupt database degrades to "no persistence"; it never raises into a tool
+    call. Sessions keep working in memory.
+  - **Opt out** — `BASH_MCP_SESSION_PERSIST=0` restores the pre-v0.9
+    process-lifetime behaviour (nothing is written, nothing is read).
+  - **Relocate** — `BASH_MCP_SESSION_DB_PATH` overrides the location.
+  - **Restore rules** — a session whose `cwd` was deleted, that is no longer
+    under an allowed root, or whose id is malformed is dropped from the store
+    instead of being restored. The env dict is truncated to `MAX_ENV_VARS`.
+  - **Idle eviction deletes the row too**, so an evicted session does not come
+    back on the next boot.
+  - **`bash_mcp_status`** gained `sessions.persistence.{enabled, path,
+    persisted_sessions}`.
+- **12 tools, no new tool** — v0.9 changes the lifecycle of the existing
+  session tools; it does not add any.
+
 ## What's new in v0.3.0
 
 - **Audit log rotation** — `audit.jsonl` rotates at 25 MB (configurable) keeping 5 backups (`audit.jsonl.{1..5}`). Lazy + thread-safe.
@@ -55,7 +81,7 @@ All three features are **opt-in via env vars** and default to off, so existing c
 ## What's new in v0.6.0
 
 - **Stateful sessions** — four new tools (`bash_mcp_session_create`, `_run`, `_destroy`, `_list`) keep a server-side `cwd` and accumulated `env` dict across calls. Use them when you need to `cd` somewhere and stay there, or `export` a variable and have it persist for the next call.
-- **Sessions are process-lifetime** — a server restart wipes them. Caller is responsible for `_destroy`. There is no auto-TTL.
+- **Sessions are process-lifetime** — a server restart wipes them. Caller is responsible for `_destroy`. There is no auto-TTL. _(Superseded in v0.9: sessions are persisted to disk and restored on boot.)_
 - **Best-effort parser** — top-level `cd PATH`, `export VAR=value`, `unset VAR` are tracked; shell scripts, functions, `$(...)`, heredocs are out of scope (the subprocess still runs correctly, but state isn't persisted from them).
 - **`bash_mcp_status` extended** with `sessions.{active, max_env_per_session}`.
 - 220 tests passing (up from 164).
@@ -77,10 +103,10 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
 | `bash_mcp_list_binaries()` | ~37 well-known tools with `{path, exists, version?}`. |
 | `bash_mcp_which(name)` | Resolve a single binary. |
 | `bash_mcp_status()` | Service health, audit stats + rotation config, concurrency, sessions, uptime, tool list. |
-| `bash_mcp_session_create(name?, cwd?)` | Create a stateful session; returns a `session_id`. |
+| `bash_mcp_session_create(name?, cwd?)` | Create a stateful session; returns a `session_id`. Persisted to disk since v0.9. |
 | `bash_mcp_session_run(session_id, command, ...)` | Run a command in a session; persists `cd` / `export` / `unset`. |
-| `bash_mcp_session_destroy(session_id)` | Destroy a session, free memory. |
-| `bash_mcp_session_list()` | List active sessions, most-recently-used first. |
+| `bash_mcp_session_destroy(session_id)` | Destroy a session, free memory, drop the disk row. |
+| `bash_mcp_session_list()` | List active sessions, most-recently-used first (includes sessions restored on boot). |
 | `bash_mcp_classify(command)` | Read-only denylist explainer; returns `{class, matched_pattern, hint, would_execute, ...}`. v0.7. |
 | `bash_mcp_audit_read(backup_index, max_entries?, tool_filter?)` | Read entries from a rotated audit backup (plaintext or gzip). v0.7.1. |
 
@@ -178,6 +204,8 @@ All via environment variables. Set them in the `Environment=` lines of `infra/sy
 | `BASH_MCP_AUDIT_MAX_BYTES` | `26214400` (25 MB) | Audit log rotation threshold |
 | `BASH_MCP_AUDIT_BACKUP_COUNT` | `5` | Audit log backups kept |
 | `BASH_MCP_MAX_CONCURRENT` | `8` | Max in-flight subprocesses |
+| `BASH_MCP_SESSION_PERSIST` | `1` | Persist sessions to disk (v0.9). `0` = off |
+| `BASH_MCP_SESSION_DB_PATH` | `$XDG_DATA_HOME/bash-mcp/sessions.db` | Session store location (v0.9) |
 
 ### `.bash-mcp.toml` (per-project cwd allowlist, v0.8)
 
@@ -539,7 +567,7 @@ cd /home/jbecerra/projects/bash-mcp
 **Still pending:**
 
 - **Persistent shell state (PTY-based)** — v0.6 sessions are best-effort regex parsing of `cd` / `export` / `unset`. v0.7 could keep a real `bash` process alive per session (via `pexpect` or similar) and track shell variables, aliases, functions, `set -e` / `pipefail`, and job control. Requires a redesign of the session lifecycle and a hard cap on concurrent shells (memory + fd cost).
-- **Disk persistence for sessions** — v0.6 sessions are wiped on server restart. v0.7 could serialize `_SESSIONS` to SQLite or JSON-on-disk and restore on boot, with a migration story for callers that depend on the process-lifetime contract.
+- ~~**Disk persistence for sessions**~~ — **shipped in v0.9** (SQLite store in `session_store.py`, restored on boot, opt-out via `BASH_MCP_SESSION_PERSIST=0`). See "What's new in v0.9.0".
 - **Session snapshots** (`fork` a session at a point in time) — useful for branching workflows.
 - **Cross-session env sharing** — share a named env dict across multiple sessions.
 - **Web UI for browsing the audit log** — minimal Flask/FastAPI page on a separate port with filters by tool / classification / time.

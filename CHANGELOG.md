@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-10
+
+### Added
+
+- **Disk persistence for stateful sessions** — `bash_mcp_session_*` state is now mirrored to a SQLite store and restored when the server starts. A WSL reboot no longer wipes the agent's cwd/env.
+  - **New module `src/bash_mcp/session_store.py`** — stdlib `sqlite3` only, no new dependency. One row per session: `session_id`, `name`, `cwd`, `env_json`, `created_at`, `last_used_at`. One connection per operation, so the store is thread-safe under FastMCP's thread pool without extra locking.
+  - **Store location** — `$XDG_DATA_HOME/bash-mcp/sessions.db` (default `~/.local/share/bash-mcp/sessions.db`); override with `BASH_MCP_SESSION_DB_PATH`.
+  - **Opt out** — `BASH_MCP_SESSION_PERSIST=0` restores the pre-v0.9 process-lifetime behaviour (nothing written, nothing read).
+  - **Fail-soft** — a missing directory, an unwritable path or a corrupt database degrades to "no persistence" with a stderr warning; it never raises into a tool call. Sessions keep working in memory.
+  - **`sessions.restore()`** — called on boot through `server._bootstrap()`. Drops (and deletes) rows whose `cwd` no longer exists, whose `cwd` is no longer under an allowed root, or whose `session_id` is malformed; truncates the env dict to `MAX_ENV_VARS`.
+  - **Idle eviction deletes the disk row too**, so an evicted session does not come back on the next boot.
+  - **`bash_mcp_status`** gained `sessions.persistence.{enabled, path, persisted_sessions}`.
+
+### Changed
+
+- **`bash_mcp_session_create` / `_run` / `_destroy` / `_list`** — the "process-lifetime, a restart wipes them" caveat is gone: sessions are persisted and restored. `bash_mcp_session_destroy` also removes the disk row.
+- **`server.main()`** now calls `_bootstrap()` (session restore) before serving.
+- **`infra/scripts/smoke-v07.py`** — version assertion bumped to 0.9.0 + a new live section that exercises the persistence layer end to end.
+
+### Tests
+
+- **314 passing** (up from 281) + 24 e2e skipped when no live server.
+- New `tests/test_session_store.py` — 14 unit tests: round-trip, upsert, delete, disabled flag, corrupt DB, unwritable path, path resolution.
+- New `tests/test_sessions_persistence.py` — 15 integration tests: create / destroy / `apply_state_update` reach the store, restore semantics (empty store, missing cwd, cwd outside the allowlist, malformed id, env cap), idle eviction deletes the row, persistence status.
+- New `tests/test_server_persistence.py` — 4 tests: the status payload carries the persistence layer, bootstrap restores, bootstrap reports zero.
+- New `tests/conftest.py` — autouse fixture pointing `BASH_MCP_SESSION_DB_PATH` at a per-test temp file, so the suite never touches the real store.
+
+### Backwards compatibility
+
+- 12 MCP tools — no new tool added (v0.9 changes the session lifecycle).
+- **Behaviour change:** sessions now survive a server restart. Set `BASH_MCP_SESSION_PERSIST=0` for the old behaviour.
+- No new dependency — `sqlite3` is part of the standard library.
+
 ### Infrastructure
 
 - **`infra/launcher.sh` — screen-based bootstrap (fixes a silent no-op).** This WSL instance runs with `systemd=false` in `/etc/wsl.conf`, so the previous `systemctl --user start bash-mcp.service` was a silent no-op (`Failed to connect to bus`) and bash-mcp did not come back after a reboot. The launcher now starts the server in a `screen` session (`SCREENDIR=/tmp/screen`), waits for port 54321 to open, and retries up to 3 times with a 15 s pause between attempts. It is idempotent: an already-listening port short-circuits the whole thing.

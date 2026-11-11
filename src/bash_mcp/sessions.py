@@ -1,6 +1,10 @@
 """Session state — cwd + env persistence across calls.
 
-Process-lifetime only. No disk persistence in v0.6.
+v0.6 was process-lifetime only; **v0.9 adds disk persistence**. Every
+mutation of a session is mirrored to a SQLite store
+(`bash_mcp.session_store`), so the sessions that were alive before a
+restart are restored on boot. Set `BASH_MCP_SESSION_PERSIST=0` to opt out
+and keep the pre-v0.9 process-lifetime behaviour.
 
 Design notes:
   * `SessionState` is a dataclass: {session_id, name, cwd, env,
@@ -43,7 +47,7 @@ from bash_mcp.executor import (
     _convert_windows_path,
     _is_under_allowed_root,
 )
-from bash_mcp import project_allowlist
+from bash_mcp import project_allowlist, session_store
 
 
 DEFAULT_MAX_ENV_VARS = 256
@@ -227,6 +231,11 @@ def _evict_idle() -> int:
             if state is not None:
                 evicted.append((sid, len(state.env)))
 
+    # Drop the disk copies too — an evicted session must not come back
+    # on the next restore.
+    for sid, _freed in evicted:
+        session_store.delete(sid)
+
     # Audit each eviction OUTSIDE the lock. Audit is best-effort: a
     # broken audit log does NOT block the eviction itself.
     for sid, freed in evicted:
@@ -355,6 +364,7 @@ def create(name: str | None = None, cwd: str | None = None) -> SessionState:
     with _LOCK:
         _SESSIONS[session_id] = state
 
+    _persist(state)
     _ensure_janitor()
     return state
 
@@ -373,6 +383,8 @@ def destroy(session_id: str) -> int:
         return 0
     with _LOCK:
         state = _SESSIONS.pop(session_id, None)
+    if state is not None:
+        session_store.delete(session_id)
     return len(state.env) if state else 0
 
 
@@ -429,6 +441,8 @@ def apply_state_update(
             state = _SESSIONS.get(session_id)
             if state is not None:
                 state.last_used_at = time.time()
+        if state is not None:
+            _persist(state)
         # Outside the lock — janitor thread startup is idempotent.
         _ensure_janitor()
         return
@@ -463,8 +477,79 @@ def apply_state_update(
 
         state.last_used_at = time.time()
 
-    # Outside the lock — janitor thread startup is idempotent.
-    _ensure_janitor()
+    # Outside the lock — the disk copy is updated after the state is
+    # settled, so a slow filesystem cannot block other sessions.
+    _persist(state)
 
     # Outside the lock — janitor thread startup is idempotent.
     _ensure_janitor()
+
+
+# --- v0.9: disk persistence ---
+
+
+def _persist(state: SessionState) -> None:
+    """Mirror a session to the disk store. Best-effort, never raises."""
+    try:
+        session_store.save(
+            state.session_id,
+            state.name,
+            state.cwd,
+            state.env,
+            state.created_at,
+            state.last_used_at,
+        )
+    except Exception:  # noqa: BLE001 — persistence must never break a session
+        pass
+
+
+def restore() -> int:
+    """Reload the persisted sessions into the registry.
+
+    Called once when the server starts. Returns the number of sessions
+    restored. Rows that can no longer be used — a cwd that was deleted, a
+    cwd that is no longer under an allowed root, a malformed session id —
+    are dropped from the store instead of being restored.
+    """
+    if not session_store.enabled():
+        return 0
+
+    restored = 0
+    for row in session_store.load_all():
+        session_id = row.get("session_id")
+        if not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):
+            session_store.delete(session_id if isinstance(session_id, str) else "")
+            continue
+
+        try:
+            cwd = _resolve_cwd(row.get("cwd") or "")
+        except (InvalidCwdError, OSError, TypeError, ValueError):
+            session_store.delete(session_id)
+            continue
+
+        env = dict(row.get("env") or {})
+        if len(env) > MAX_ENV_VARS:
+            env = dict(list(env.items())[:MAX_ENV_VARS])
+
+        state = SessionState(
+            session_id=session_id,
+            name=row.get("name") or _new_default_name(session_id),
+            cwd=cwd,
+            env=env,
+            created_at=float(row.get("created_at") or time.time()),
+            last_used_at=float(row.get("last_used_at") or time.time()),
+        )
+        with _LOCK:
+            _SESSIONS[session_id] = state
+        restored += 1
+
+    return restored
+
+
+def persistence_status() -> dict:
+    """Snapshot of the disk-persistence layer (surfaced by bash_mcp_status)."""
+    return {
+        "enabled": session_store.enabled(),
+        "path": str(session_store.db_path()),
+        "persisted_sessions": session_store.count(),
+    }

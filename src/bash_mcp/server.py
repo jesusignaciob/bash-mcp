@@ -11,6 +11,7 @@ import argparse
 import os
 import platform
 import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -421,6 +422,7 @@ def bash_mcp_status() -> dict[str, Any]:
             "max_env_per_session": sessions.MAX_ENV_VARS,
             "idle_timeout_s": sessions.IDLE_TIMEOUT_S,
             "janitor_enabled": sessions.IDLE_TIMEOUT_S > 0,
+            "persistence": sessions.persistence_status(),
         },
         "python_version": platform.python_version(),
         "process": {
@@ -531,10 +533,12 @@ def bash_mcp_session_create(
 ) -> dict[str, Any]:
     """Create a new stateful session.
 
-    Sessions persist `cwd` and exported `env` across calls within the
-    server process. State is LOST on server restart (v0.6 limitation —
-    not persisted to disk). Caller is responsible for `destroy`-ing
-    sessions when done; idle sessions are not auto-cleaned.
+    Sessions persist `cwd` and exported `env` across calls, and — since
+    v0.9 — across server restarts too: the state is mirrored to a SQLite
+    store and restored on boot. Set `BASH_MCP_SESSION_PERSIST=0` to get
+    the old process-lifetime behaviour back. Caller is responsible for
+    `destroy`-ing sessions when done; idle sessions are not auto-cleaned
+    unless `BASH_MCP_SESSION_IDLE_TIMEOUT_S` is set.
 
     Only top-level `cd` and `export`/`unset` statements on simple
     command chains are tracked. Shell scripts, functions, conditionals,
@@ -629,8 +633,8 @@ def bash_mcp_session_run(
             message=f"No active session with id '{session_id}'.",
             hint=(
                 "Create one with bash_mcp_session_create, or list active "
-                "sessions with bash_mcp_session_list. Note that sessions "
-                "are process-lifetime — a server restart wipes them."
+                "sessions with bash_mcp_session_list. Sessions survive a "
+                "server restart (v0.9) — but only if they were not destroyed."
             ),
             audit_id=audit_id,
         )
@@ -794,7 +798,7 @@ def bash_mcp_session_destroy(session_id: str) -> dict[str, Any]:
             message=f"No active session with id '{session_id}'.",
             hint=(
                 "Check bash_mcp_session_list for active session ids. "
-                "Note that sessions are process-lifetime."
+                "Sessions survive a server restart (v0.9)."
             ),
             audit_id=audit_id,
         )
@@ -900,6 +904,23 @@ def bash_mcp_audit_read(
     }
 
 
+def _bootstrap() -> dict:
+    """Restore the sessions persisted by the previous run (v0.9).
+
+    Called once before the server starts serving. Returns a small summary
+    so the boot is observable (and testable). Failures are swallowed by
+    `sessions.restore()` itself — a broken store must not stop the server.
+    """
+    restored = sessions.restore()
+    if restored:
+        print(
+            f"[bash-mcp] restored {restored} session(s) from "
+            f"{sessions.persistence_status()['path']}",
+            file=sys.stderr,
+        )
+    return {"restored": restored}
+
+
 def main() -> None:
     """Entry point for `bash-mcp` console script (see pyproject.toml)."""
     parser = argparse.ArgumentParser(description="bash-mcp — WSL bash executor")
@@ -918,6 +939,8 @@ def main() -> None:
         default=int(os.environ.get("FASTMCP_SERVER_PORT", "54321")),
     )
     args = parser.parse_args()
+
+    _bootstrap()
 
     mcp.run(transport=args.transport, host=args.host, port=args.port)
 

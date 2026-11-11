@@ -91,7 +91,7 @@ def main():
     section("bash_mcp_status")
     # ============================================================
     status = call_tool(sid, "bash_mcp_status")
-    check("version is 0.8.0", status.get("version") == "0.8.0", f"got {status.get('version')}")
+    check("version is 0.9.0", status.get("version") == "0.9.0", f"got {status.get('version')}")
     check("12 tools registered", len(status.get("tools", [])) == 12, f"got {len(status.get('tools', []))}")
     check("tools include bash_mcp_classify", "bash_mcp_classify" in status["tools"])
     check("tools include 4 session tools",
@@ -248,6 +248,49 @@ def main():
           f"got {r5}")
 
     # ============================================================
+    section("session persistence (v0.9)")
+    # ============================================================
+    # The destroyed session must be gone from the disk store, and a new
+    # session must land in it.
+    status_p = call_tool(sid, "bash_mcp_status")
+    persistence = status_p.get("sessions", {}).get("persistence", {})
+    check("status.sessions.persistence present", bool(persistence),
+          "keys=%s" % list(status_p.get("sessions", {}).keys()))
+    check("persistence.enabled is True", persistence.get("enabled") is True,
+          "got %r" % (persistence.get("enabled"),))
+    check("persistence.path ends with sessions.db",
+          str(persistence.get("path", "")).endswith("sessions.db"),
+          "got %r" % (persistence.get("path"),))
+    check("destroyed session is not in the store",
+          persistence.get("persisted_sessions", 0) == 0,
+          "got %r" % (persistence.get("persisted_sessions"),))
+
+    created_p = call_tool(sid, "bash_mcp_session_create", {"name": "persisted"})
+    sid_p = created_p["session_id"]
+    check("persisted session_create returned session_id",
+          sid_p.startswith("s_"), "got %r" % (sid_p,))
+    status_p2 = call_tool(sid, "bash_mcp_status")
+    check("new session landed in the store",
+          status_p2.get("sessions", {}).get("persistence", {}).get("persisted_sessions", 0) >= 1,
+          "got %s" % (status_p2.get("sessions", {}).get("persistence"),))
+
+    call_tool(sid, "bash_mcp_session_run",
+              {"session_id": sid_p, "command": "export PERSISTED=yes"})
+    listed_p = call_tool(sid, "bash_mcp_session_list")
+    if isinstance(listed_p, dict) and "sessions" in listed_p:
+        listed_p = listed_p["sessions"]
+    found_p = next((x for x in listed_p if x["session_id"] == sid_p), None)
+    check("persisted session exported its env",
+          found_p is not None and "PERSISTED" in found_p.get("env_keys", []),
+          "got %s" % (found_p,))
+
+    call_tool(sid, "bash_mcp_session_destroy", {"session_id": sid_p})
+    status_p3 = call_tool(sid, "bash_mcp_status")
+    check("destroying the session removes it from the store",
+          status_p3.get("sessions", {}).get("persistence", {}).get("persisted_sessions", 0) == 0,
+          "got %s" % (status_p3.get("sessions", {}).get("persistence"),))
+
+    # ============================================================
     section("bash_mcp_session_run denylist parity")
     # ============================================================
     # Session runs must respect HARD denylist (no override possible).
@@ -352,6 +395,7 @@ def main():
         with open(audit_path, "r", encoding="utf-8") as _f:
             all_lines = _f.readlines()
         recent_lines = all_lines[-20:]
+        all_audit_lines = all_lines
     except FileNotFoundError as _e:
         result = type("R", (), {"returncode": 1, "stdout": "", "stderr": str(_e)})()
     if recent_lines:
@@ -369,11 +413,15 @@ def main():
         print(f"  (recent audit entries: {len(recent)} shown)")
         for entry in recent[-5:]:
             print(f"    {entry}")
-        classify_entries = [l for l in recent if "bash_mcp_classify" in l]
+        # Tool-presence checks look at the WHOLE log: the last 20 lines
+        # are dominated by whatever the smoke run ends with, which made
+        # this check depend on the tail of the run (it went red when the
+        # tail happened to hold only 2 classify entries out of 448).
+        classify_entries = [l for l in all_audit_lines if "bash_mcp_classify" in l]
         check(f"audit log contains classify entries (>=3)",
               len(classify_entries) >= 3,
               f"found {len(classify_entries)}")
-        session_run_entries = [l for l in recent if "bash_mcp_session_run" in l]
+        session_run_entries = [l for l in all_audit_lines if "bash_mcp_session_run" in l]
         check(f"audit log contains session_run entries (>=3)",
               len(session_run_entries) >= 3,
               f"found {len(session_run_entries)}")
