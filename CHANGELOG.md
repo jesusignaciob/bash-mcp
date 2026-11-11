@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Infrastructure
+
+- **`infra/launcher.sh` — screen-based bootstrap (fixes a silent no-op).** This WSL instance runs with `systemd=false` in `/etc/wsl.conf`, so the previous `systemctl --user start bash-mcp.service` was a silent no-op (`Failed to connect to bus`) and bash-mcp did not come back after a reboot. The launcher now starts the server in a `screen` session (`SCREENDIR=/tmp/screen`), waits for port 54321 to open, and retries up to 3 times with a 15 s pause between attempts. It is idempotent: an already-listening port short-circuits the whole thing.
+- **`infra/hooks/bash-mcp-redirect.js` — 6 WSL patterns instead of 1.** The PreToolUse hook previously denied only direct `wsl` invocations. It now also denies: `bash|sh|zsh|fish` invoked with `-c` / `-lc` / `-l`; `bash|sh` executed against a WSL path (`/home`, `/mnt`, `/var`, `/tmp`, `/opt`, `/root`); Python heredocs; WSL-only system binaries (`apt`, `apt-get`, `systemctl`, `journalctl`, `service`, `ufw`, `snap`, `pacman`, `brew`); and `curl|bash` / `wget|sh` pipelines. The abort reason now lists the real server tool names, explains *why* the call was blocked, and documents the `BASH_MCP_SKIP=1` / `# bash-mcp:skip` bypass.
+- **`.gitignore`** — ignore `*.bak` and `*.bak.*` debris so manual backups never show up as untracked files.
+
 ## [0.8.0] — 2026-09-13
 
 ### Added

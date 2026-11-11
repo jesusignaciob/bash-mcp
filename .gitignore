@@ -27,3 +27,7 @@ Thumbs.db
 
 # Local audit logs (live at ~/.local/share/bash-mcp/, but defensive)
 /audit.jsonl
+
+# Editor / manual backup debris (*.bak, *.bak.20261030-095751, ...)
+*.bak
+*.bak.*
