@@ -53,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AGENTS.md** — new **"Runtime reality: this WSL has `systemd=false`"** section: why `systemctl --user` silently fails, that the server runs in a `screen` session, that `screen` needs `SCREENDIR=/tmp/screen`, and that the Windows Scheduled Task is not registered.
 - **install.sh** — detects whether systemd is actually usable and falls back to the screen launcher; installs the skill to `~/.minimax/skills/bash-mcp/` (and the legacy `~/.mavis/skills/bash-mcp/`); the `mcp.json` description and the printed `mavis mcp create` command now use the real tool names.
 - **server.py + hook** — `_SKILL_DOC_PATH` and the hook's abort reason point at `~/.minimax/skills/bash-mcp/SKILL.md`.
+- **Architecture diagram** — `architecture.mermaid` (source of truth) + `architecture.html` (standalone render) replace the repo-cartographer draft stubs. The diagram maps the Windows host (MCP clients, PreToolUse hook, Scheduled Task), the WSL server (tools, guardrails, executor, sessions), the on-disk state (`sessions.db`, `audit.jsonl`) and the `bash -lc` child process. `infra/scripts/build-architecture.py` renders the HTML from the mermaid source (with a `--check` mode for CI) so the two can never drift.
+- **New `infra/scripts/proof-persistence.py`** — end-to-end proof that a session survives a server restart: `create` then (after a restart) `check <session_id>`.
 
 ## [0.8.0] — 2026-09-13
 

@@ -1,0 +1,67 @@
+flowchart TB
+
+%% bash-mcp — architecture (v0.9.0)
+%% ---
+%% Source of truth for the architecture diagram.
+%% Rendered to architecture.html by: uv run python infra/scripts/build-architecture.py
+%% ---
+%% NOTE: the `flowchart TB` declaration must come FIRST — mermaid 11 rejects a
+%% file that opens with `%%` comment lines ("Syntax error in text"), and a bare
+%% `%%` line with no text after it is parsed as a node.
+%% ---
+%% Reading order: top = who calls, bottom = what it touches.
+
+  subgraph win["Windows · host"]
+    direction LR
+    ide["MCP clients<br/>MiniMax Code · Cursor · OpenCode"]
+    hook["PreToolUse hook<br/>bash-mcp-redirect.js"]
+    task["Windows Scheduled Task<br/>BashMcp-WSL-Bootstrap"]
+  end
+
+  subgraph wsl["WSL · bash-mcp server"]
+    direction TB
+    tools["server.py<br/>12 MCP tools"]
+    guard["safety.py + project_allowlist.py<br/>HARD/SOFT denylist · .bash-mcp.toml"]
+    exec["executor.py + concurrency.py<br/>timeout · truncate · cwd allowlist · max 8"]
+    sess["sessions.py<br/>cwd + env per session"]
+  end
+
+  subgraph disk["WSL · disk state"]
+    direction LR
+    db[("sessions.db<br/>SQLite")]
+    log[("audit.jsonl<br/>rotation · gzip")]
+  end
+
+  launcher["launcher.sh<br/>screen session · port 54321"]
+  bash["bash -lc<br/>child process"]
+
+  ide -->|"MCP streamable-http"| tools
+  hook -.->|"blocks wsl calls from PowerShell"| ide
+  task -.->|"logon +60s"| launcher
+  launcher --> tools
+
+  tools --> guard
+  guard --> exec
+  exec --> bash
+
+  tools --> sess
+  sess --> db
+  tools --> log
+
+  classDef client fill:#ffffff,stroke:#3b6fd4,color:#1f2937,stroke-width:1.5px
+  classDef focal fill:#eaf0fd,stroke:#3b6fd4,color:#1f2937,stroke-width:1.5px
+  classDef module fill:#ffffff,stroke:#94a3b8,color:#334155
+  classDef guardrail fill:#fdf6e8,stroke:#d97706,color:#334155
+  classDef store fill:#f1f5f9,stroke:#94a3b8,color:#334155
+  classDef external fill:#f8fafc,stroke:#cbd5e1,color:#64748b,stroke-dasharray:5 3
+
+  class ide,hook client
+  class tools focal
+  class exec,sess,launcher,bash module
+  class guard guardrail
+  class db,log store
+  class task external
+
+  style win fill:#fbfcfd,stroke:#d8dee9,stroke-width:1px,color:#475569
+  style wsl fill:#f7f9fc,stroke:#c9d6f5,stroke-width:1px,color:#334155
+  style disk fill:#fbfcfd,stroke:#d8dee9,stroke-width:1px,color:#475569

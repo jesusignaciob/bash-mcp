@@ -322,6 +322,28 @@ bash_mcp_status()
 > reboot. The unit file in `infra/systemd/` is kept as the reference for the
 > `Environment=` lines and the `screen` `ExecStart`.
 
+### Architecture diagram
+
+`architecture.mermaid` is the source of truth; `architecture.html` is its
+standalone render (open it in any browser). Regenerate after editing the
+mermaid source:
+
+```bash
+uv run python infra/scripts/build-architecture.py        # write architecture.html
+uv run python infra/scripts/build-architecture.py --check  # CI: fail if stale
+```
+
+### Prove a session survives a restart (v0.9)
+
+```bash
+# 1. create a session with a distinctive cwd + env
+uv run python infra/scripts/proof-persistence.py create
+
+# 2. restart the server, then check the session came back
+screen -S bash-mcp -X quit && bash ~/projects/bash-mcp/infra/launcher.sh
+uv run python infra/scripts/proof-persistence.py check <session_id>
+```
+
 ### Audit log (rotation in v0.3+)
 
 The audit log at `~/.local/share/bash-mcp/audit.jsonl` rotates automatically when it crosses `BASH_MCP_AUDIT_MAX_BYTES` (default 25 MB).
@@ -447,7 +469,7 @@ bash-mcp/
 ├── LICENSE                          # MIT
 ├── README.md                        # this file
 ├── architecture.mermaid             # architecture diagram — source of truth
-├── architecture.html                # architecture diagram — standalone render
+├── architecture.html                # architecture diagram — standalone render (generated)
 ├── pyproject.toml                   # uv-managed, FastMCP 2.7.0
 ├── uv.lock
 ├── src/bash_mcp/                    # server code
@@ -477,6 +499,10 @@ bash-mcp/
     ├── launcher.sh                  # WSL bootstrap — starts the server in screen
     ├── update-ip.sh                 # refresh WSL IP in mcp.json
     ├── mcp.json.snippet             # documentation reference
+    ├── scripts/
+    │   ├── smoke-v07.py             # live-server round-trip for every tool
+    │   ├── build-architecture.py    # regenerate architecture.html from architecture.mermaid
+    │   └── proof-persistence.py     # prove a session survives a server restart (v0.9)
     ├── systemd/
     │   └── bash-mcp.service         # reference unit (screen ExecStart)
     ├── hooks/
