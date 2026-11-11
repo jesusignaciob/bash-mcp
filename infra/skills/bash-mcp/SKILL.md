@@ -65,7 +65,7 @@ Resolves a single binary. Returns `{name, path, exists, version?}`. Use for tool
 
 ### `bash_mcp_status()`
 
-Read-only health check. Returns `{service, version, uptime_seconds, start_time, audit: {path, entries, size_bytes, max_bytes, backup_count, backups_present, gzip_threshold_bytes, gzip_enabled}, concurrency: {max_concurrent, active}, sessions: {active, max_env_per_session, idle_timeout_s, janitor_enabled}, python_version, process: {pid, rss_bytes}, tools: [...]}`. Use this to verify the service is up without SSH/tail logs.
+Read-only health check. Returns `{service, version, uptime_seconds, start_time, audit: {path, entries, size_bytes, max_bytes, backup_count, backups_present, gzip_threshold_bytes, gzip_enabled, gzip_backups, plaintext_backups}, concurrency: {max_concurrent, active}, sessions: {active, max_env_per_session, idle_timeout_s, janitor_enabled}, python_version, process: {pid, rss_bytes}, tools: [...]}`. Use this to verify the service is up without SSH/tail logs.
 
 ### `bash_mcp_classify(command) → {...}` (v0.7)
 
@@ -195,7 +195,7 @@ If you intend one of these, **call `bash_run_command` with `dangerous: true`** e
 - Env values are NOT logged (only env keys).
 - v0.6 sessions: per-session env dict is capped at 256 vars (configurable via `BASH_MCP_SESSION_MAX_ENV_VARS`). Sessions are process-lifetime — a restart wipes them. Caller must `bash_mcp_session_destroy` to free memory.
 - v0.7 session auto-TTL (opt-in): set `BASH_MCP_SESSION_IDLE_TIMEOUT_S` to enable. A daemon janitor evicts sessions whose `last_used_at` is older than the timeout. Each eviction is audited as `tool="bash_mcp_session_destroy" reason="idle_ttl_expired"`. Sweep interval is `max(5, min(300, timeout // 4))` seconds. Default 0 = disabled (preserves v0.6 contract).
-- v0.7 audit gzip-on-rotation (opt-in): set `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` to enable. After rotation, any backup larger than the threshold is gzipped to `.jsonl.N.gz` (one-way; use `zcat` to inspect). Default 0 = disabled (preserves v0.3 plaintext-only behavior).
+- v0.10 audit gzip-on-rotation: after rotation, any backup larger than `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` is gzipped to `.jsonl.N.gz` (one-way; use `zcat` to inspect). Default 1 MiB = enabled; set the env var to `0` for plaintext-only rotation. `bash_mcp_audit_read` reads both variants transparently.
 
 ## Common Patterns
 

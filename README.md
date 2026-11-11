@@ -18,6 +18,27 @@ Running WSL commands from PowerShell (`wsl -d Ubuntu-22.04 -- bash -lc "..."`) h
 
 [MIT](LICENSE)
 
+## What's new in v0.10.0
+
+- **The gzip-on-rotation pass no longer destroys backups.** The v0.7 gzip pass
+  compressed a rotated backup, but the rotation shift only renamed *plaintext*
+  backups (`audit.jsonl.N`). Gzipped backups (`audit.jsonl.N.gz`) were never
+  shifted, so they kept their index — and the next gzip pass wrote a fresh
+  `audit.jsonl.1.gz` straight over the existing one. **With gzip enabled,
+  every rotation silently destroyed the oldest backup.** The shift now moves
+  both variants, and the gzip pass never overwrites an existing archive (it
+  warns and keeps both files instead).
+- **The gzip pass is on by default, above a 1 MiB threshold.** Until now
+  `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` defaulted to `0` (= disabled), so the
+  feature existed but never ran unless you opted in. The default is now
+  `1048576` (1 MiB): a rotated backup larger than that is compressed to
+  `audit.jsonl.N.gz` and its plaintext is removed. Set the env var to `0` to
+  opt out and keep plaintext-only rotation.
+- **`bash_mcp_status` gained `audit.{gzip_backups, plaintext_backups}`** — how
+  many rotated backups are compressed vs. plaintext, so the rotation can be
+  verified at a glance.
+- 347 tests passing (up from 338).
+
 ## What's new in v0.9.0
 
 - **Sessions survive a server restart** — every `bash_mcp_session_*` mutation is
@@ -72,7 +93,7 @@ All changes are non-breaking. v0.7.0 callers see zero behavior change.
 
 - **`bash_mcp_classify(command)` denylist explainer** — read-only tool that returns `{class, matched_pattern, pattern_index, hint_with_dangerous_false, hint_with_dangerous_true, would_execute, would_execute_with_dangerous_true, audit_id}`. Use BEFORE `bash_run_command` if you're unsure whether a command will be rejected. Saves a round-trip and gives the exact regex that would fire.
 - **Session auto-TTL (opt-in)** — set `BASH_MCP_SESSION_IDLE_TIMEOUT_S` to enable. A daemon janitor evicts sessions whose `last_used_at` is older than the timeout. Each eviction is audited as `tool="bash_mcp_session_destroy" reason="idle_ttl_expired"`. Default 0 = disabled (preserves v0.6 contract).
-- **Audit log gzip-on-rotation (opt-in)** — set `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` to enable. After rotation, any backup larger than the threshold is gzipped to `.jsonl.N.gz` (one-way; use `zcat` to inspect). Default 0 = disabled (preserves v0.3 plaintext-only behavior).
+- **Audit log gzip-on-rotation (opt-in)** — set `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` to enable. After rotation, any backup larger than the threshold is gzipped to `.jsonl.N.gz` (one-way; use `zcat` to inspect). Default 0 = disabled (preserves v0.3 plaintext-only behavior). _(Since v0.10 the default is 1 MiB and the pass no longer destroys the oldest backup — see "What's new in v0.10.0".)_
 - **`bash_mcp_status` extended** with `audit.{gzip_threshold_bytes, gzip_enabled}` and `sessions.{idle_timeout_s, janitor_enabled}`.
 - 274 tests passing (up from 220).
 
@@ -159,8 +180,8 @@ Streamable-http transport. `bash_mcp_run_command` is stateless per call; the
 four `bash_mcp_session_*` tools additionally clone + write `cwd` and `env`
 through `src/bash_mcp/sessions.py` (process-lifetime only). v0.7 adds a
 daemon janitor thread (opt-in via `BASH_MCP_SESSION_IDLE_TIMEOUT_S`) and
-gzip-on-rotation for the audit log (opt-in via
-`BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES`).
+gzip-on-rotation for the audit log (on by default above 1 MiB via
+`BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES`; `0` disables it).
 
 ## Safety
 
@@ -203,6 +224,7 @@ All via environment variables. Set them in the `Environment=` lines of `infra/sy
 | `FASTMCP_SERVER_PORT` | `54321` | Bind port (IANA dynamic range) |
 | `BASH_MCP_AUDIT_MAX_BYTES` | `26214400` (25 MB) | Audit log rotation threshold |
 | `BASH_MCP_AUDIT_BACKUP_COUNT` | `5` | Audit log backups kept |
+| `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` | `1048576` (1 MiB) | Rotated backups above this size are gzipped. `0` disables (v0.10) |
 | `BASH_MCP_MAX_CONCURRENT` | `8` | Max in-flight subprocesses |
 | `BASH_MCP_SESSION_PERSIST` | `1` | Persist sessions to disk (v0.9). `0` = off |
 | `BASH_MCP_SESSION_DB_PATH` | `$XDG_DATA_HOME/bash-mcp/sessions.db` | Session store location (v0.9) |
@@ -487,6 +509,7 @@ bash-mcp/
 │   ├── test_errors.py               # error envelope shape + hints
 │   ├── test_audit_rotation.py       # rotation cases
 │   ├── test_audit_gzip.py           # gzip-on-rotation cases
+│   ├── test_audit_gzip_rotation.py  # gzip rotation lifecycle (v0.10)
 │   ├── test_audit_read.py           # bash_mcp_audit_read cases
 │   ├── test_classify_tool.py        # bash_mcp_classify cases
 │   ├── test_concurrency.py          # concurrency limit cases
@@ -597,7 +620,7 @@ cd /home/jbecerra/projects/bash-mcp
 - **Session snapshots** (`fork` a session at a point in time) — useful for branching workflows.
 - **Cross-session env sharing** — share a named env dict across multiple sessions.
 - **Web UI for browsing the audit log** — minimal Flask/FastAPI page on a separate port with filters by tool / classification / time.
-- ~~**Audit log compression**~~ — **shipped in v0.7.1** via `bash_mcp_audit_read` (closes the gzip one-way archival caveat). See "What's new in v0.7.1". Remaining: gzip-on-rotation above a higher threshold + audit log shipping (Loki/CloudWatch) still deferred to v0.9+.
+- ~~**Audit log compression**~~ — **shipped in v0.7.1** via `bash_mcp_audit_read` (closes the gzip one-way archival caveat) and **completed in v0.10**, which fixed the rotation pass that destroyed the oldest backup and turned the gzip threshold on by default (1 MiB). See "What's new in v0.7.1" and "What's new in v0.10.0". Remaining: audit log shipping (Loki/CloudWatch), still deferred.
 - **Audit log shipping** — Loki push API, CloudWatch Logs, or local syslog. Optional, gated by config.
 - ~~**Per-project allowlists** (`.bash-mcp.toml` in repo root)~~ — **shipped in v0.8** via the `.bash-mcp.toml` schema. See **Configuration → `.bash-mcp.toml`** above. Supports both ``extend`` (merge with global) and ``replace`` (sandbox) modes.
 - **A formal threat-model document** — STRIDE-style analysis of the audit log, the hook, the denylist, and the session lifecycle.

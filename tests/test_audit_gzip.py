@@ -130,6 +130,10 @@ def test_gzip_threshold_configurable_via_env(monkeypatch, tmp_path):
     import importlib
     importlib.reload(audit)
     assert audit.GZIP_THRESHOLD_BYTES == 500
+    # Drop the env var BEFORE reloading: monkeypatch teardown only runs
+    # after the test body, so reloading here would re-read 500 and leak
+    # the polluted value into every later test.
+    monkeypatch.delenv("BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES", raising=False)
     importlib.reload(audit)  # restore default for the next test
 
 

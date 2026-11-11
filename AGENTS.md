@@ -335,3 +335,31 @@ file is present.
 - `tests/test_sessions_persistence.py` (+15) - the registry <-> store wiring
   and the restore rules.
 - `tests/test_server_persistence.py` (+4) - status payload + boot restore.
+
+## v0.10 (added 2026-11-11)
+
+### What shipped
+
+- **The gzip-on-rotation pass no longer destroys backups.** The v0.7 shift
+  renamed only plaintext backups, so gzipped backups kept their index and
+  the next gzip pass overwrote them — every rotation discarded the oldest
+  generation. The shift now moves both variants; the gzip pass never
+  clobbers an existing `.gz`.
+- **The gzip threshold defaults to 1 MiB** (`BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES`),
+  so the pass actually runs. `0` restores the opt-out behavior.
+
+### Design rules
+
+- **Both variants shift together.** `audit.jsonl.N` and `audit.jsonl.N.gz`
+  are renamed in the same loop, from the highest index down, so an archive
+  never lands on an index that still holds a file.
+- **Never overwrite an archive.** If the target `.gz` already exists, the
+  pass warns and keeps both files. Destroying a generation silently is
+  worse than leaving a backup uncompressed.
+- **Opt out** with `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES=0`.
+
+### Test layout
+
+- `tests/test_audit_gzip_rotation.py` (+9) — the rotation lifecycle: every
+  generation survives at the right index, the oldest is still dropped, and
+  the sweep never clobbers an existing archive.

@@ -412,6 +412,12 @@ def bash_mcp_status() -> dict[str, Any]:
             "backups_present": [p.name for p in audit.backup_paths()],
             "gzip_threshold_bytes": audit.GZIP_THRESHOLD_BYTES,
             "gzip_enabled": audit.GZIP_THRESHOLD_BYTES > 0,
+            "gzip_backups": len(
+                [p for p in audit.backup_paths() if p.name.endswith(".gz")]
+            ),
+            "plaintext_backups": len(
+                [p for p in audit.backup_paths() if not p.name.endswith(".gz")]
+            ),
         },
         "concurrency": {
             "max_concurrent": MAX_CONCURRENT,

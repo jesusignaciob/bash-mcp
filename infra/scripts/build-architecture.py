@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -164,7 +165,7 @@ TEMPLATE = """<!doctype html>
 <header>
   <span class="eyebrow">bash-mcp</span>
   <h1>Architecture</h1>
-  <span class="tag">v0.9.0 · mermaid source of truth</span>
+  <span class="tag">v__VERSION__ · mermaid source of truth</span>
 </header>
 <main>
   <div class="diagram">
@@ -255,11 +256,24 @@ TEMPLATE = """<!doctype html>
 """
 
 
+def package_version() -> str:
+    """Read __version__ from the package (no import: keeps the script standalone)."""
+    init = REPO_ROOT / "src" / "bash_mcp" / "__init__.py"
+    try:
+        text = init.read_text(encoding="utf-8")
+    except OSError:
+        return "?"
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else "?"
+
+
 def build(source: str) -> str:
     """Return the HTML page for the given mermaid source."""
     escaped = html.escape(source, quote=False)
-    return TEMPLATE.replace("__MERMAID_HTML__", escaped).replace(
-        "__MERMAID_JSON__", json.dumps(source)
+    return (
+        TEMPLATE.replace("__MERMAID_HTML__", escaped)
+        .replace("__MERMAID_JSON__", json.dumps(source))
+        .replace("__VERSION__", package_version())
     )
 
 

@@ -29,11 +29,14 @@ MAX_AUDIT_BYTES: int = int(os.environ.get("BASH_MCP_AUDIT_MAX_BYTES", str(25 * 1
 BACKUP_COUNT: int = int(os.environ.get("BASH_MCP_AUDIT_BACKUP_COUNT", "5"))
 
 # v0.7: gzip-on-rotation. When a rotated backup exceeds this size, it
-# is gzipped to .jsonl.N.gz and the plaintext is deleted. Default 0 =
-# disabled (preserves the v0.3 plaintext-only rotation behavior).
-# Decompression is NOT implemented in v0.7; use `zcat audit.jsonl.N.gz`
-# to inspect archived backups.
-DEFAULT_GZIP_THRESHOLD_BYTES: int = 0
+# is gzipped to .jsonl.N.gz and the plaintext is deleted.
+#
+# v0.10: the default is 1 MiB (was 0 = disabled), so the gzip pass
+# actually runs out of the box instead of silently doing nothing. Set
+# `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES=0` to opt out and keep the
+# plaintext-only rotation behavior.
+# `bash_mcp_audit_read` (v0.7.1) reads both variants transparently.
+DEFAULT_GZIP_THRESHOLD_BYTES: int = 1024 * 1024
 GZIP_THRESHOLD_BYTES: int = int(
     os.environ.get("BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES", str(DEFAULT_GZIP_THRESHOLD_BYTES))
 )
@@ -101,16 +104,25 @@ def _rotate_if_needed(path: Path) -> None:
     if size < MAX_AUDIT_BYTES:
         return
 
-    # Drop oldest backup (audit.jsonl.BACKUP_COUNT)
-    oldest = path.with_suffix(path.suffix + f".{BACKUP_COUNT}")
-    if oldest.exists():
-        oldest.unlink()
-    # Shift backups: .N-1 -> .N, ..., .1 -> .2
+    # Drop the oldest backup, in BOTH variants (plaintext + gzip).
+    for suffix in ("", ".gz"):
+        oldest = path.with_suffix(path.suffix + f".{BACKUP_COUNT}{suffix}")
+        if oldest.exists():
+            oldest.unlink()
+    # Shift backups: .N-1 -> .N, ..., .1 -> .2 — in BOTH variants.
+    #
+    # v0.10 fix: the shift used to rename only the PLAINTEXT backups, so
+    # an already-gzipped backup (`audit.jsonl.N.gz`) kept its index — and
+    # the next gzip pass wrote a fresh `audit.jsonl.1.gz` over it. Net
+    # effect: with gzip enabled, every rotation destroyed the oldest
+    # backup. Both variants must shift, or the archives pile up on one
+    # index and overwrite each other.
     for n in range(BACKUP_COUNT - 1, 0, -1):
-        src = path.with_suffix(path.suffix + f".{n}")
-        if src.exists():
-            dst = path.with_suffix(path.suffix + f".{n + 1}")
-            src.rename(dst)
+        for suffix in ("", ".gz"):
+            src = path.with_suffix(path.suffix + f".{n}{suffix}")
+            if src.exists():
+                dst = path.with_suffix(path.suffix + f".{n + 1}{suffix}")
+                src.rename(dst)
     # Current -> .1
     backup1 = path.with_suffix(path.suffix + ".1")
     path.rename(backup1)
@@ -147,6 +159,16 @@ def _gzip_pass(path: Path) -> None:
             continue
 
         gz_path = backup.with_suffix(backup.suffix + ".gz")
+        if gz_path.exists():
+            # Never destroy an existing archive. Both files stay on disk
+            # (the plaintext is left uncompressed and the warning says
+            # so) — overwriting would silently destroy a generation.
+            print(
+                f"[bash-mcp audit] WARN: {gz_path.name} already exists - "
+                f"keeping it and the plaintext backup {backup.name}",
+                file=sys.stderr,
+            )
+            continue
         try:
             with backup.open("rb") as f_in, \
                  gzip.open(gz_path, "wb", compresslevel=6) as f_out:

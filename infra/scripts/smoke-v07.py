@@ -91,7 +91,7 @@ def main():
     section("bash_mcp_status")
     # ============================================================
     status = call_tool(sid, "bash_mcp_status")
-    check("version is 0.9.0", status.get("version") == "0.9.0", f"got {status.get('version')}")
+    check("version is 0.10.0", status.get("version") == "0.10.0", f"got {status.get('version')}")
     check("12 tools registered", len(status.get("tools", [])) == 12, f"got {len(status.get('tools', []))}")
     check("tools include bash_mcp_classify", "bash_mcp_classify" in status["tools"])
     check("tools include 4 session tools",
@@ -101,14 +101,26 @@ def main():
           ]))
     check("audit.gzip_enabled present", "gzip_enabled" in status["audit"],
           f"keys={list(status.get('audit', {}).keys())}")
+    check("audit.gzip_enabled is True (1 MiB default, v0.10)",
+          status["audit"].get("gzip_enabled") is True,
+          f"got {status['audit'].get('gzip_enabled')!r}")
+    check("audit.gzip_threshold_bytes is 1 MiB",
+          status["audit"].get("gzip_threshold_bytes") == 1048576,
+          f"got {status['audit'].get('gzip_threshold_bytes')!r}")
+    check("audit.gzip_backups is int",
+          isinstance(status["audit"].get("gzip_backups"), int))
+    check("audit.plaintext_backups is int",
+          isinstance(status["audit"].get("plaintext_backups"), int))
     check("audit.gzip_threshold_bytes is int",
           isinstance(status["audit"].get("gzip_threshold_bytes"), int))
     check("sessions.janitor_enabled present", "janitor_enabled" in status["sessions"],
           f"keys={list(status.get('sessions', {}).keys())}")
     check("sessions.idle_timeout_s is int",
           isinstance(status["sessions"].get("idle_timeout_s"), int))
-    check("gzip_enabled is False (default off)",
-          status["audit"]["gzip_enabled"] is False)
+    # v0.10: the gzip pass is on by default (1 MiB threshold); set
+    # BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES=0 to opt out.
+    check("gzip_enabled is True (default on since v0.10)",
+          status["audit"]["gzip_enabled"] is True)
     check("janitor_enabled is False (default off)",
           status["sessions"]["janitor_enabled"] is False)
 

@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-11
+
+### Fixed
+
+- **The gzip-on-rotation pass destroyed the oldest backup.** The rotation
+  shift renamed only the *plaintext* backups (`audit.jsonl.N`), so an
+  already-gzipped backup (`audit.jsonl.N.gz`) kept its index — and the next
+  gzip pass wrote a fresh `audit.jsonl.1.gz` straight over it. With gzip
+  enabled, **every rotation silently discarded the oldest generation**. The
+  shift now moves both variants (plaintext and gzip), and the gzip pass
+  never overwrites an existing archive: it warns and keeps both files.
+- **Env-var pollution in the test suite** — `test_gzip_threshold_configurable_via_env`
+  reloaded the `audit` module "to restore the default", but `monkeypatch`
+  teardown runs after the test body, so the reload re-read the env var
+  (`500`) that was still set. Every later test saw the polluted value. The
+  env var is now dropped before the restoring reload.
+
+### Added
+
+- **The gzip pass is on by default, above a 1 MiB threshold.**
+  `BASH_MCP_AUDIT_GZIP_THRESHOLD_BYTES` defaults to `1048576` (was `0` =
+  disabled), so a rotated backup larger than 1 MiB is compressed to
+  `audit.jsonl.N.gz` and its plaintext removed. Set the env var to `0` to
+  opt out and keep plaintext-only rotation. `bash_mcp_audit_read` (v0.7.1)
+  already reads both variants transparently.
+- **`bash_mcp_status` gained `audit.{gzip_backups, plaintext_backups}`** —
+  how many rotated backups are compressed vs. plaintext.
+
+### Tests
+
+- **347 passing** (up from 338).
+- New `tests/test_audit_gzip_rotation.py` — 9 tests: successive rotations
+  preserve every generation at the right index (the data-loss regression),
+  the oldest backup is still dropped in both variants, `read_backup` sees
+  the archived generation, `backup_paths` lists the archives, and the gzip
+  pass never clobbers an existing `.gz`.
+
 ## [0.9.0] — 2026-11-10
 
 ### Added
