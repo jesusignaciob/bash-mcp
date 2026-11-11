@@ -6,7 +6,8 @@
 # Deploys:
 #   - systemd unit       → ~/.config/systemd/user/bash-mcp.service
 #   - PreToolUse hook     → /mnt/c/Users/jesus/.minimax/agents/mavis/hooks/bash-mcp-redirect.md
-#   - Skill               → /mnt/c/Users/jesus/.mavis/skills/bash-mcp/{SKILL.md,_meta.json}
+#   - Skill               → /mnt/c/Users/jesus/.minimax/skills/bash-mcp/{SKILL.md,_meta.json}
+#                         (and the legacy /mnt/c/Users/jesus/.mavis/skills/bash-mcp/)
 #   - mcp.json entry      → /mnt/c/Users/jesus/.minimax/mcp/mcp.json (idempotent overwrite of bash-mcp)
 #   - Agent prompt rule   → mavis agent "mavis" (manual apply, see step [5/5])
 #
@@ -55,15 +56,24 @@ echo "WSL home:  $WSL_USER_HOME"
 [ "$DRY_RUN" = "1" ] && echo "MODE:      DRY-RUN (no changes will be made)"
 echo ""
 
-# 1. systemd unit
-echo "[1/5] systemd unit"
+# 1. systemd unit (reference) + start the server
+echo "[1/5] systemd unit + server start"
 run_or_print "mkdir"  mkdir -p ~/.config/systemd/user
 run_or_print "cp"     cp -f "$INFRA/systemd/bash-mcp.service" ~/.config/systemd/user/
-run_or_print "systemd" systemctl --user daemon-reload
-run_or_print "systemd" systemctl --user enable bash-mcp.service
-run_or_print "systemd" systemctl --user restart bash-mcp.service
-[ "$DRY_RUN" = "1" ] && echo "  -> [DRY-RUN] would enable + restart service" \
-                       || echo "  -> enabled + restarted"
+
+# systemd may be disabled (/etc/wsl.conf -> systemd=false). On such an
+# instance `systemctl --user` is a SILENT no-op ("Failed to connect to bus"),
+# so detect it and fall back to the screen-based launcher, which is the
+# supported path there.
+if systemctl --user show-environment >/dev/null 2>&1; then
+    run_or_print "systemd" systemctl --user daemon-reload
+    run_or_print "systemd" systemctl --user enable bash-mcp.service
+    run_or_print "systemd" systemctl --user restart bash-mcp.service
+    echo "  -> systemd available: unit enabled + restarted"
+else
+    echo "  -> systemd NOT available (systemd=false?): starting via the screen launcher"
+    run_or_print "launcher" bash "$INFRA/launcher.sh"
+fi
 
 # 2. PreToolUse hook
 echo ""
@@ -78,12 +88,17 @@ run_or_print "cp"     cp -f "$INFRA/hooks/bash-mcp-redirect.js" "$HOOK_DST/"
 # 3. Skill
 echo ""
 echo "[3/5] Skill"
-SKILL_DST="$WSL_USER_HOME/.mavis/skills/bash-mcp"
+SKILL_DST="$WSL_USER_HOME/.minimax/skills/bash-mcp"
+LEGACY_SKILL_DST="$WSL_USER_HOME/.mavis/skills/bash-mcp"
 run_or_print "mkdir"  mkdir -p "$SKILL_DST"
 run_or_print "cp"     cp -f "$INFRA/skills/bash-mcp/SKILL.md" "$SKILL_DST/"
 run_or_print "cp"     cp -f "$INFRA/skills/bash-mcp/_meta.json" "$SKILL_DST/"
-[ "$DRY_RUN" = "1" ] && echo "  -> [DRY-RUN] would copy to $SKILL_DST/" \
-                       || echo "  -> copied to $SKILL_DST/"
+# Legacy runtime path — older MiniMax Code installs read ~/.mavis/skills/.
+run_or_print "mkdir"  mkdir -p "$LEGACY_SKILL_DST"
+run_or_print "cp"     cp -f "$INFRA/skills/bash-mcp/SKILL.md" "$LEGACY_SKILL_DST/"
+run_or_print "cp"     cp -f "$INFRA/skills/bash-mcp/_meta.json" "$LEGACY_SKILL_DST/"
+[ "$DRY_RUN" = "1" ] && echo "  -> [DRY-RUN] would copy to $SKILL_DST/ and $LEGACY_SKILL_DST/" \
+                       || echo "  -> copied to $SKILL_DST/ and $LEGACY_SKILL_DST/"
 
 # 4. mcp.json entry (idempotent overwrite of bash-mcp only)
 echo ""
@@ -107,10 +122,14 @@ else:
     cfg = json.loads(mcp_path.read_text(encoding="utf-8"))
     desc = (
         "WSL bash executor \u2014 REQUIRED for any WSL command. "
-        "Tools: run_command, check_env, list_binaries, which. "
+        "Tools (v0.8.0): bash_run_command, bash_check_env, bash_list_binaries, "
+        "bash_which, bash_mcp_status, bash_mcp_classify, bash_mcp_audit_read, "
+        "bash_mcp_session_create, bash_mcp_session_run, bash_mcp_session_destroy, "
+        "bash_mcp_session_list. "
         "DO NOT use `wsl -d ... -- bash -c \"...\"` from PowerShell \u2014 that path has "
-        "quoting, UTF-16, and PATH bugs. Instead, call bash-mcp_run_command({command: \"...\"}). "
-        "Safety: denylist + timeouts + output cap; pass dangerous=true to bypass soft denylist."
+        "quoting, UTF-16, and PATH bugs. Instead, call bash_run_command({command: \"...\"}). "
+        "Safety: denylist (HARD + SOFT) + timeouts + output cap + audit log; "
+        "pass dangerous=true to bypass the SOFT denylist (HARD cannot be bypassed). "
     )
     servers = cfg.setdefault("mcpServers", {})
     servers["bash-mcp"] = {
@@ -189,7 +208,7 @@ cat <<MCEOF
     --transport streamable-http \`
     --url http://${WSL_IP}:54321/mcp/ \`
     --enabled true \`
-    --description "WSL bash executor \u2014 REQUIRED for any WSL command. Tools: run_command, check_env, list_binaries, which. DO NOT use \`wsl -d ... -- bash -c \"...\"\` from PowerShell \u2014 quoting, UTF-16, and PATH bugs. Call bash-mcp_run_command({command: \"...\"}). Safety: denylist + timeouts + output cap; pass dangerous=true to bypass soft denylist."
+    --description "WSL bash executor \u2014 REQUIRED for any WSL command. Tools: bash_run_command, bash_check_env, bash_list_binaries, bash_which, bash_mcp_status, bash_mcp_classify, bash_mcp_audit_read, bash_mcp_session_create/run/destroy/list. DO NOT use \`wsl -d ... -- bash -c \"...\"\` from PowerShell \u2014 quoting, UTF-16, and PATH bugs. Call bash_run_command({command: \"...\"}). Safety: denylist + timeouts + output cap; pass dangerous=true to bypass soft denylist."
 MCEOF
 echo ""
 echo "(If bash-mcp is already registered, this is a no-op update.)"
@@ -199,11 +218,12 @@ echo "  Run as Administrator from PowerShell:"
 echo "    powershell -ExecutionPolicy Bypass -File $REPO_ROOT\\infra\\windows\\install-task.ps1"
 echo ""
 echo "  This registers a Task Scheduler entry that invokes the WSL-side launcher.sh"
-echo "  on every Windows logon (60s delay), keeping bash-mcp.service running."
+echo "  on every Windows logon (60s delay), keeping the server running in a screen session."
 echo "============================================================"
 echo ""
 echo "Verify after running for real:"
-echo "  systemctl --user status bash-mcp.service"
+echo "  bash /home/jbecerra/projects/bash-mcp/infra/launcher.sh   # idempotent, safe to re-run"
+echo "  screen -ls                                               # expect a 'bash-mcp' session"
 echo "  mavis mcp list  (from PowerShell)"
 echo "  curl http://${WSL_IP}:54321/mcp/  (initialize MCP, then tools/list)"
 echo ""

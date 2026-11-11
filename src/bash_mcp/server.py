@@ -47,7 +47,7 @@ _START_TIME = time.time()
 _AUDIT_PATH = Path.home() / ".local" / "share" / "bash-mcp" / "audit.jsonl"
 
 # Documentation path for hints — points the agent to the skill
-_SKILL_DOC_PATH = "C:\\Users\\jesus\\.mavis\\skills\\bash-mcp\\SKILL.md"
+_SKILL_DOC_PATH = "C:\\Users\\jesus\\.minimax\\skills\\bash-mcp\\SKILL.md"
 
 
 # --- Error envelope helpers (extracted for testability + reuse) ---

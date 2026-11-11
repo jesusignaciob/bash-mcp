@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`infra/hooks/bash-mcp-redirect.js` — 6 WSL patterns instead of 1.** The PreToolUse hook previously denied only direct `wsl` invocations. It now also denies: `bash|sh|zsh|fish` invoked with `-c` / `-lc` / `-l`; `bash|sh` executed against a WSL path (`/home`, `/mnt`, `/var`, `/tmp`, `/opt`, `/root`); Python heredocs; WSL-only system binaries (`apt`, `apt-get`, `systemctl`, `journalctl`, `service`, `ufw`, `snap`, `pacman`, `brew`); and `curl|bash` / `wget|sh` pipelines. The abort reason now lists the real server tool names, explains *why* the call was blocked, and documents the `BASH_MCP_SKIP=1` / `# bash-mcp:skip` bypass.
 - **`.gitignore`** — ignore `*.bak` and `*.bak.*` debris so manual backups never show up as untracked files.
 
+### Documentation
+
+- **README** — tool names corrected (`bash_run_command`, **not** `bash-mcp_run_command`: the hyphenated name does not exist on the server). Every `systemctl --user` instruction replaced with the screen/launcher flow, because this WSL runs `systemd=false` and `systemctl --user` is a silent no-op there. Project layout tree refreshed (12 tools, 281 tests, `sessions.py` + `project_allowlist.py`). Explicit note that `BashMcp-WSL-Bootstrap` ships in the repo but is **not registered** on this machine.
+- **SKILL.md** — backported the tool-naming fix (underscore names + "Tool naming" note) that had only ever been applied to the deployed copy since 2026-10-30; the repo and the deployed skill are identical again. Doc paths now point at `~/.minimax/`.
+- **AGENTS.md** — new **"Runtime reality: this WSL has `systemd=false`"** section: why `systemctl --user` silently fails, that the server runs in a `screen` session, that `screen` needs `SCREENDIR=/tmp/screen`, and that the Windows Scheduled Task is not registered.
+- **install.sh** — detects whether systemd is actually usable and falls back to the screen launcher; installs the skill to `~/.minimax/skills/bash-mcp/` (and the legacy `~/.mavis/skills/bash-mcp/`); the `mcp.json` description and the printed `mavis mcp create` command now use the real tool names.
+- **server.py + hook** — `_SKILL_DOC_PATH` and the hook's abort reason point at `~/.minimax/skills/bash-mcp/SKILL.md`.
+
 ## [0.8.0] — 2026-09-13
 
 ### Added

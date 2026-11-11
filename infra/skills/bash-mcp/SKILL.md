@@ -1,6 +1,6 @@
 ﻿---
 name: bash-mcp
-description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash-mcp_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_audit_read (read audit backups, v0.7.1), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6). Per-project cwd allowlists via `.bash-mcp.toml` (v0.8): drop a TOML in your repo root to extend or replace the global allowlist."
+description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_audit_read (read audit backups, v0.7.1), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6). Per-project cwd allowlists via `.bash-mcp.toml` (v0.8): drop a TOML in your repo root to extend or replace the global allowlist."
 license: MIT
 metadata:
   version: "1.9"
@@ -18,16 +18,24 @@ The **REQUIRED** way to run WSL bash commands from this agent. Replaces the old 
 wsl -d Ubuntu-22.04 -- bash -lc "cd /tmp && ls -lah"
 
 # ✅ CORRECT — call the MCP tool instead
-bash-mcp_run_command({command: "cd /tmp && ls -lah"})
+bash_run_command({command: "cd /tmp && ls -lah"})
 ```
 
-A PreToolUse hook on the `bash` tool will **deny** any shell call that starts with `wsl` and ask you to retry with bash-mcp. If you see an abort reason mentioning "bash-mcp_run_command", that's the hook — switch tools and retry.
+A PreToolUse hook on the `bash` tool will **deny** any shell call that starts with `wsl` and ask you to retry with bash-mcp. If you see an abort reason mentioning "bash_run_command", that's the hook — switch tools and retry.
 
 If you ever need to bypass the hook (e.g. testing), prefix the command with `BASH_MCP_SKIP=1`.
 
 ## Tools
 
-### `bash-mcp_run_command(command, cwd?, timeout_ms?, env?, dangerous?)`
+### `bash_run_command(command, cwd?, timeout_ms?, env?, dangerous?)`
+
+> **Tool naming:** the server exposes this tool as `bash_run_command`. Your MCP client prefixes it
+> with the server name — in MiniMax Code it appears as `mcp__bash_mcp_<hash>__bash_run_command`
+> (the server name is underscored in the prefix and a hash is inserted), Cursor/OpenCode as
+> `bash-mcp_bash_run_command`. Do **not** call the hyphenated `bash-mcp_run_command`: that tool does
+> not exist on the server. The same applies to the other tools — `bash_check_env`, `bash_which`,
+> `bash_list_binaries`, `bash_mcp_status`, `bash_mcp_classify`, `bash_mcp_audit_read`,
+> `bash_mcp_session_create/run/destroy/list` (all underscore, never `bash-mcp_*`).
 
 Execute bash, return structured output.
 
@@ -43,15 +51,15 @@ Returns `{stdout, stderr, exit_code, duration_ms, timed_out, truncated, classifi
 
 Error shape (all errors follow this): `{error: {code, message, hint, documentation, matched_pattern?}}`. The `hint` field tells the agent what to do next.
 
-### `bash-mcp_check_env()`
+### `bash_check_env()`
 
 Read-only. Returns OS, kernel, Python version, uv version, `$HOME`, `$PATH` entries, `cwd`. Use this when you need to know what's available.
 
-### `bash-mcp_list_binaries()`
+### `bash_list_binaries()`
 
 Returns ~37 well-known tools with `{name, path, exists, version?}`. Sorted installed-first then alphabetical. Use this when you don't know if a tool is installed.
 
-### `bash-mcp_which(name)`
+### `bash_which(name)`
 
 Resolves a single binary. Returns `{name, path, exists, version?}`. Use for tools not in `list_binaries`.
 
@@ -59,13 +67,13 @@ Resolves a single binary. Returns `{name, path, exists, version?}`. Use for tool
 
 Read-only health check. Returns `{service, version, uptime_seconds, start_time, audit: {path, entries, size_bytes, max_bytes, backup_count, backups_present, gzip_threshold_bytes, gzip_enabled}, concurrency: {max_concurrent, active}, sessions: {active, max_env_per_session, idle_timeout_s, janitor_enabled}, python_version, process: {pid, rss_bytes}, tools: [...]}`. Use this to verify the service is up without SSH/tail logs.
 
-### `bash-mcp_classify(command) → {...}` (v0.7)
+### `bash_mcp_classify(command) → {...}` (v0.7)
 
 Read-only denylist explainer. Does NOT execute. Use BEFORE `bash_run_command` if you're unsure whether a command will be rejected — saves a round-trip and gives you the exact regex + pattern that would fire.
 
 Returns `{class, matched_pattern, pattern_index, hint_with_dangerous_false, hint_with_dangerous_true, would_execute, would_execute_with_dangerous_true, audit_id}` where `class ∈ {"safe", "dangerous", "reject"}`. Each call is audited as `tool="bash_mcp_classify"`.
 
-### `bash-mcp_audit_read(backup_index, max_entries?, tool_filter?)` (v0.7.1)
+### `bash_mcp_audit_read(backup_index, max_entries?, tool_filter?)` (v0.7.1)
 
 Read entries from a rotated audit backup. Closes the v0.7 gzip one-way archival caveat by transparently decompressing `.jsonl.N.gz`. Returns `{backup_index, path, format ("plaintext" | "gzip"), entries, returned, audit_id}`. Reads are themselves audited as `tool="bash_mcp_audit_read"`. `backup_index=0` is the current `audit.jsonl`; 1..N are rotated backups.
 
@@ -79,13 +87,13 @@ A session is a server-side container that keeps a `cwd` and an accumulated `env`
 
 **Important: sessions are process-lifetime.** A server restart wipes them. There is no auto-TTL; you must call `bash_mcp_session_destroy` when done.
 
-### `bash-mcp_session_create(name?, cwd?) → {session_id, ...}`
+### `bash_mcp_session_create(name?, cwd?) → {session_id, ...}`
 
 Create a new session. Optional human-readable `name` (≤64 chars) and optional starting `cwd` (must be under an allowed root — same rules as `bash_run_command`).
 
-### `bash-mcp_session_run(session_id, command, timeout_ms?, dangerous?) → result`
+### `bash_mcp_session_run(session_id, command, timeout_ms?, dangerous?) → result`
 
-Run a command in a session. Same denylist, concurrency, timeout, and audit semantics as `bash-mcp_run_command`. Adds:
+Run a command in a session. Same denylist, concurrency, timeout, and audit semantics as `bash_run_command`. Adds:
 
 - Runs in `session.cwd` (instead of `$HOME` default).
 - Inherits `session.env` (after `os.environ`).
@@ -97,11 +105,11 @@ Run a command in a session. Same denylist, concurrency, timeout, and audit seman
 - Shell scripts, functions, `if`/`while` bodies, `$(...)`, backticks, heredocs, multi-line `\` continuations are out of scope.
 - `export X="$HOME"` stores the literal `$HOME` (the subprocess still sees the real value because `bash -lc` expanded it; the session does not).
 
-### `bash-mcp_session_destroy(session_id) → {ok, session_id, freed_env_vars}`
+### `bash_mcp_session_destroy(session_id) → {ok, session_id, freed_env_vars}`
 
 Destroy a session and free its memory. Returns `SESSION_NOT_FOUND` if the id is unknown.
 
-### `bash-mcp_session_list() → [...]`
+### `bash_mcp_session_list() → [...]`
 
 List active sessions. Most-recently-used first. Each entry: `{session_id, name, cwd, created_at, last_used_at, env_count, env_keys}`.
 
@@ -109,21 +117,21 @@ List active sessions. Most-recently-used first. Each entry: `{session_id, name, 
 
 ```javascript
 // 1. Create a session in /tmp
-const { session_id } = bash-mcp_session_create({name: "build", cwd: "/tmp"})
+const { session_id } = bash_mcp_session_create({name: "build", cwd: "/tmp"})
 
 // 2. cd, set an env var, run a command — all in one call
-bash-mcp_session_run({
+bash_mcp_session_run({
   session_id, command: "cd /home/jbecerra/projects/myapp && export FOO=bar && pwd && echo $FOO"
 })
 
 // 3. Next call — cwd and env persist without re-sending
-const r = bash-mcp_session_run({
+const r = bash_mcp_session_run({
   session_id, command: "pwd && echo $FOO"
 })
 // r.stdout → "/home/jbecerra/projects/myapp\nbar\n"
 
 // 4. Cleanup
-bash-mcp_session_destroy({session_id})
+bash_mcp_session_destroy({session_id})
 ```
 
 ## Safety Model
@@ -177,7 +185,7 @@ Package install (v0.0–v0.3):
 Destructive sync (v0.4):
 - `rsync --delete`
 
-If you intend one of these, **call `bash-mcp_run_command` with `dangerous: true`** explicitly.
+If you intend one of these, **call `bash_run_command` with `dangerous: true`** explicitly.
 
 ### Operational notes
 
@@ -193,32 +201,32 @@ If you intend one of these, **call `bash-mcp_run_command` with `dangerous: true`
 
 ```javascript
 // Discover environment
-bash-mcp_check_env()
+bash_check_env()
 
 // Check if a tool is installed
-bash-mcp_list_binaries()  // batch
-bash-mcp_which({name: "rg"})  // single
+bash_list_binaries()  // batch
+bash_which({name: "rg"})  // single
 
 // Run a command
-bash-mcp_run_command({command: "ls -lah /tmp"})
+bash_run_command({command: "ls -lah /tmp"})
 
 // Run with custom cwd and timeout
-bash-mcp_run_command({command: "pytest -xvs", cwd: "/home/jbecerra/projects/myapp", timeout_ms: 120000})
+bash_run_command({command: "pytest -xvs", cwd: "/home/jbecerra/projects/myapp", timeout_ms: 120000})
 
 // Run a dangerous command explicitly
-bash-mcp_run_command({command: "sudo systemctl restart nginx", dangerous: true})
+bash_run_command({command: "sudo systemctl restart nginx", dangerous: true})
 
 // Run a package removal explicitly (v0.4+)
-bash-mcp_run_command({command: "pip uninstall requests", dangerous: true})
+bash_run_command({command: "pip uninstall requests", dangerous: true})
 
 // Verify service health
-bash-mcp_status()
+bash_mcp_status()
 
 // v0.6 — multi-step workflow with persistent cwd + env
-const { session_id } = bash-mcp_session_create({name: "demo", cwd: "/tmp"})
-bash-mcp_session_run({session_id, command: "cd /home/jbecerra/projects/myapp && export DEBUG=1"})
-bash-mcp_session_run({session_id, command: "pwd && echo $DEBUG"})
-bash-mcp_session_destroy({session_id})
+const { session_id } = bash_mcp_session_create({name: "demo", cwd: "/tmp"})
+bash_mcp_session_run({session_id, command: "cd /home/jbecerra/projects/myapp && export DEBUG=1"})
+bash_mcp_session_run({session_id, command: "pwd && echo $DEBUG"})
+bash_mcp_session_destroy({session_id})
 ```
 
 ## Operational Notes

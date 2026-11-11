@@ -54,7 +54,7 @@ All three features are **opt-in via env vars** and default to off, so existing c
 
 ## What's new in v0.6.0
 
-- **Stateful sessions** — four new tools (`bash-mcp_session_create`, `_run`, `_destroy`, `_list`) keep a server-side `cwd` and accumulated `env` dict across calls. Use them when you need to `cd` somewhere and stay there, or `export` a variable and have it persist for the next call.
+- **Stateful sessions** — four new tools (`bash_mcp_session_create`, `_run`, `_destroy`, `_list`) keep a server-side `cwd` and accumulated `env` dict across calls. Use them when you need to `cd` somewhere and stay there, or `export` a variable and have it persist for the next call.
 - **Sessions are process-lifetime** — a server restart wipes them. Caller is responsible for `_destroy`. There is no auto-TTL.
 - **Best-effort parser** — top-level `cd PATH`, `export VAR=value`, `unset VAR` are tracked; shell scripts, functions, `$(...)`, heredocs are out of scope (the subprocess still runs correctly, but state isn't persisted from them).
 - **`bash_mcp_status` extended** with `sessions.{active, max_env_per_session}`.
@@ -72,42 +72,42 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
 
 | Tool | Purpose |
 |---|---|
-| `bash-mcp_run_command(command, cwd?, timeout_ms?, env?, dangerous?)` | Execute bash. Returns structured output. |
-| `bash-mcp_check_env()` | OS, kernel, Python, uv, PATH entries. |
-| `bash-mcp_list_binaries()` | ~37 well-known tools with `{path, exists, version?}`. |
-| `bash-mcp_which(name)` | Resolve a single binary. |
-| `bash-mcp_status()` | Service health, audit stats + rotation config, concurrency, sessions, uptime, tool list. |
-| `bash-mcp_session_create(name?, cwd?)` | Create a stateful session; returns a `session_id`. |
-| `bash-mcp_session_run(session_id, command, ...)` | Run a command in a session; persists `cd` / `export` / `unset`. |
-| `bash-mcp_session_destroy(session_id)` | Destroy a session, free memory. |
-| `bash-mcp_session_list()` | List active sessions, most-recently-used first. |
-| `bash-mcp_classify(command)` | Read-only denylist explainer; returns `{class, matched_pattern, hint, would_execute, ...}`. v0.7. |
-| `bash-mcp_audit_read(backup_index, max_entries?, tool_filter?)` | Read entries from a rotated audit backup (plaintext or gzip). v0.7.1. |
+| `bash_mcp_run_command(command, cwd?, timeout_ms?, env?, dangerous?)` | Execute bash. Returns structured output. |
+| `bash_mcp_check_env()` | OS, kernel, Python, uv, PATH entries. |
+| `bash_mcp_list_binaries()` | ~37 well-known tools with `{path, exists, version?}`. |
+| `bash_mcp_which(name)` | Resolve a single binary. |
+| `bash_mcp_status()` | Service health, audit stats + rotation config, concurrency, sessions, uptime, tool list. |
+| `bash_mcp_session_create(name?, cwd?)` | Create a stateful session; returns a `session_id`. |
+| `bash_mcp_session_run(session_id, command, ...)` | Run a command in a session; persists `cd` / `export` / `unset`. |
+| `bash_mcp_session_destroy(session_id)` | Destroy a session, free memory. |
+| `bash_mcp_session_list()` | List active sessions, most-recently-used first. |
+| `bash_mcp_classify(command)` | Read-only denylist explainer; returns `{class, matched_pattern, hint, would_execute, ...}`. v0.7. |
+| `bash_mcp_audit_read(backup_index, max_entries?, tool_filter?)` | Read entries from a rotated audit backup (plaintext or gzip). v0.7.1. |
 
-All tools are namespaced as `bash-mcp_*` in MiniMax Code.
+The server exposes its tools with **underscore** names (`bash_run_command`, `bash_mcp_status`, `bash_mcp_session_create`, ...). MiniMax Code prefixes them with the server name, so the tool you actually call is `mcp__bash-mcp__bash_run_command`. The hyphenated `bash-mcp_run_command` **does not exist** on the server.
 
 ## Quick start (for the agent)
 
 ```javascript
 // Discover environment
-bash-mcp_check_env()
+bash_mcp_check_env()
 
 // Check if a tool is installed
-bash-mcp_list_binaries()       // batch
-bash-mcp_which({name: "rg"})   // single
+bash_mcp_list_binaries()       // batch
+bash_mcp_which({name: "rg"})   // single
 
 // Run a command
-bash-mcp_run_command({command: "ls -lah /tmp"})
+bash_mcp_run_command({command: "ls -lah /tmp"})
 
 // Run with custom cwd and timeout
-bash-mcp_run_command({command: "pytest -xvs", cwd: "/home/jbecerra/projects/myapp", timeout_ms: 120000})
+bash_mcp_run_command({command: "pytest -xvs", cwd: "/home/jbecerra/projects/myapp", timeout_ms: 120000})
 
 // Bypass the SOFT denylist
-bash-mcp_run_command({command: "sudo systemctl restart nginx", dangerous: true})
-bash-mcp_run_command({command: "pip uninstall requests", dangerous: true})
+bash_mcp_run_command({command: "sudo systemctl restart nginx", dangerous: true})
+bash_mcp_run_command({command: "pip uninstall requests", dangerous: true})
 
 // Verify service health (audit + concurrency state)
-bash-mcp_status()
+bash_mcp_status()
 ```
 
 ## ⚠️ DO NOT use `wsl -d ... -- bash -c "..."`
@@ -129,8 +129,8 @@ MiniMax Code ──HTTP POST──> bash-mcp server (WSL, port 54321)
                             └─ on size > 25 MB: rotate → audit.jsonl.{1..5}
 ```
 
-Streamable-http transport. `bash-mcp_run_command` is stateless per call; the
-four `bash-mcp_session_*` tools additionally clone + write `cwd` and `env`
+Streamable-http transport. `bash_mcp_run_command` is stateless per call; the
+four `bash_mcp_session_*` tools additionally clone + write `cwd` and `env`
 through `src/bash_mcp/sessions.py` (process-lifetime only). v0.7 adds a
 daemon janitor thread (opt-in via `BASH_MCP_SESSION_IDLE_TIMEOUT_S`) and
 gzip-on-rotation for the audit log (opt-in via
@@ -167,7 +167,9 @@ Denylist is reviewed quarterly. Last review: **v0.4 (2026-09-12)** — see `safe
 
 ## Configuration
 
-All via environment variables. Set in `~/.config/systemd/user/bash-mcp.service` (Environment= lines), or before running locally.
+All via environment variables. Set them in the `Environment=` lines of `infra/systemd/bash-mcp.service` (the reference unit), export them in your shell before running locally, or add them to the `screen` launch command in `infra/launcher.sh`.
+
+> **This WSL instance runs with `systemd=false`** in `/etc/wsl.conf`, so `systemctl --user` is unavailable (`Failed to connect to bus`) and the server runs in a `screen` session instead. See **Operations -> Start / stop / restart**.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -225,9 +227,9 @@ the tree.
 
 `infra/install.sh` deploys everything to a fresh WSL/Windows setup:
 
-- systemd unit → `~/.config/systemd/user/bash-mcp.service`
+- systemd unit → `~/.config/systemd/user/bash-mcp.service` (reference unit — on a `systemd=false` WSL the server actually runs in a `screen` session)
 - PreToolUse hook → `~/.minimax/agents/mavis/hooks/bash-mcp-redirect.md`
-- Skill → `~/.mavis/skills/bash-mcp/`
+- Skill → `~/.minimax/skills/bash-mcp/` (and `~/.mavis/skills/bash-mcp/` for the legacy runtime)
 - mcp.json entry → `~/.minimax/mcp/mcp.json`
 - Agent system_prompt addendum → reported on stdout by `install.sh [5/5]`; applied manually once per environment via the desktop `mavis agent update mavis` tool (the WSL and Windows `mavis` CLIs do not expose the `agent` subcommand)
 
@@ -272,17 +274,25 @@ that must stay in sync".
 ### Start / stop / restart
 
 ```bash
-systemctl --user start bash-mcp.service
-systemctl --user stop bash-mcp.service
-systemctl --user restart bash-mcp.service
-systemctl --user status bash-mcp.service
+# Start (idempotent — waits for port 54321, retries up to 3 times)
+bash ~/projects/bash-mcp/infra/launcher.sh
 
-# Logs (via screen session)
-screen -r bash-mcp
+# Attach to the server's screen session (that is where the logs are)
+screen -r bash-mcp        # detach again with Ctrl-A d
 
-# Or via journalctl
-journalctl --user -u bash-mcp.service -f
+# Stop
+screen -S bash-mcp -X quit
+
+# Health / config snapshot
+bash_mcp_status()
 ```
+
+> **Why not `systemctl`?** This WSL instance runs with `systemd=false` in
+> `/etc/wsl.conf`, so `systemctl --user start bash-mcp.service` is a
+> **silent no-op** (`Failed to connect to bus`) — the old launcher called it
+> and never reported an error, so bash-mcp simply did not come back after a
+> reboot. The unit file in `infra/systemd/` is kept as the reference for the
+> `Environment=` lines and the `screen` `ExecStart`.
 
 ### Audit log (rotation in v0.3+)
 
@@ -296,7 +306,7 @@ tail -f ~/.local/share/bash-mcp/audit.jsonl
 tail -5 ~/.local/share/bash-mcp/audit.jsonl | jq .
 
 # Check current size + rotation config
-bash-mcp_status  # → audit.size_bytes, audit.max_bytes, audit.backup_count, audit.backups_present
+bash_mcp_status  # → audit.size_bytes, audit.max_bytes, audit.backup_count, audit.backups_present
 
 # List existing backups (audit.jsonl.{1..5})
 ls ~/.local/share/bash-mcp/
@@ -318,7 +328,7 @@ Max 8 concurrent subprocesses by default. Excess calls queue (don't drop). Tune 
 
 ```bash
 # Check current limit + active count
-bash-mcp_status  # → concurrency.max_concurrent, concurrency.active
+bash_mcp_status  # → concurrency.max_concurrent, concurrency.active
 ```
 
 If you make 20 parallel tool calls, 8 run, 12 queue. The semaphore is at the executor boundary, so `bash_run_command`, `bash_check_env`'s version probes, and any future subprocess-using tool all share the same cap.
@@ -327,7 +337,7 @@ If you make 20 parallel tool calls, 8 run, 12 queue. The semaphore is at the exe
 
 ```bash
 # Via MiniMax Code (recommended):
-bash-mcp_status
+bash_mcp_status
 
 # Or via shell + curl:
 curl http://localhost:54321/mcp/  # then initialize + tools/call bash_mcp_status
@@ -350,7 +360,9 @@ This rewrites only the `bash-mcp` URL in `~/.minimax/mcp/mcp.json` (and `~/.curs
 powershell -ExecutionPolicy Bypass -File C:\path\to\bash-mcp\infra\windows\install-task.ps1
 ```
 
-This registers `BashMcp-WSL-Bootstrap` in Task Scheduler with a 60s delay, RunLevel=Highest, action = `wsl.exe /home/jbecerra/projects/bash-mcp/infra/launcher.sh`. The launcher ensures `bash-mcp.service` is running (idempotent: systemd skips if already running).
+This registers `BashMcp-WSL-Bootstrap` in Task Scheduler with a 60s delay, RunLevel=Highest, action = `wsl.exe /home/jbecerra/projects/bash-mcp/infra/launcher.sh`. The launcher starts bash-mcp in a `screen` session and waits for port 54321 (idempotent: if the port is already open it exits immediately).
+
+> **Not registered on this machine.** The XML ships in the repo but the task was never installed here — `Get-ScheduledTask -TaskName BashMcp-WSL-Bootstrap` returns nothing. Until it is registered, bash-mcp must be started manually after every reboot: `bash ~/projects/bash-mcp/infra/launcher.sh`.
 
 Verify:
 
@@ -406,29 +418,39 @@ bash-mcp/
 ├── CHANGELOG.md                     # version history
 ├── LICENSE                          # MIT
 ├── README.md                        # this file
+├── architecture.mermaid             # architecture diagram — source of truth
+├── architecture.html                # architecture diagram — standalone render
 ├── pyproject.toml                   # uv-managed, FastMCP 2.7.0
 ├── uv.lock
 ├── src/bash_mcp/                    # server code
-│   ├── server.py                    # FastMCP + 6 tools
+│   ├── server.py                    # FastMCP + 12 tools
 │   ├── executor.py                  # subprocess wrapper, timeout, truncation, cwd allowlist, concurrency slot
 │   ├── safety.py                    # classify(command) + quarterly denylist reviews
 │   ├── audit.py                     # JSONL append-only logger + size-based rotation
 │   ├── discovery.py                 # which / list_binaries (thread-pool)
-│   └── concurrency.py               # BoundedSemaphore wrapper
-├── tests/                           # 164 tests
-│   ├── test_safety.py               # 115 parametrized denylist cases
-│   ├── test_executor.py             # 27 subprocess + cwd allowlist
-│   ├── test_errors.py               # 9 error envelope shape + hints
-│   ├── test_audit_rotation.py       # 6 rotation cases
-│   ├── test_concurrency.py          # 5 concurrency limit cases
-│   └── test_e2e.py                  # 11 live-server round-trips
+│   ├── concurrency.py               # BoundedSemaphore wrapper
+│   ├── sessions.py                  # stateful sessions (cwd + env across calls)
+│   └── project_allowlist.py         # per-project .bash-mcp.toml resolution
+├── tests/                           # 281 tests (24 e2e skipped without a live server)
+│   ├── test_safety.py               # denylist cases
+│   ├── test_executor.py             # subprocess + cwd allowlist
+│   ├── test_errors.py               # error envelope shape + hints
+│   ├── test_audit_rotation.py       # rotation cases
+│   ├── test_audit_gzip.py           # gzip-on-rotation cases
+│   ├── test_audit_read.py           # bash_mcp_audit_read cases
+│   ├── test_classify_tool.py        # bash_mcp_classify cases
+│   ├── test_concurrency.py          # concurrency limit cases
+│   ├── test_sessions.py             # session create / run / destroy / list
+│   ├── test_sessions_ttl.py         # idle TTL janitor
+│   ├── test_project_allowlist.py    # .bash-mcp.toml resolution
+│   └── test_e2e.py                  # live-server round-trips
 └── infra/                           # deployment artifacts
     ├── install.sh                   # idempotent deploy (--dry-run supported)
-    ├── launcher.sh                  # WSL bootstrap (parallel to semantic-memory-launcher.sh)
+    ├── launcher.sh                  # WSL bootstrap — starts the server in screen
     ├── update-ip.sh                 # refresh WSL IP in mcp.json
     ├── mcp.json.snippet             # documentation reference
     ├── systemd/
-    │   └── bash-mcp.service
+    │   └── bash-mcp.service         # reference unit (screen ExecStart)
     ├── hooks/
     │   ├── bash-mcp-redirect.md
     │   └── bash-mcp-redirect.js
@@ -467,14 +489,14 @@ with concurrency_slot():
 2. Add a parametrized test case in `tests/test_safety.py`.
 3. Update `README.md` safety table and the deployed `~/.mavis/skills/bash-mcp/SKILL.md`.
 4. **Add a dated entry to the review-history block** at the top of `safety.py` listing what was added.
-5. `systemctl --user restart bash-mcp.service` so the new pattern is live.
+5. Restart the server so the new pattern is live: `screen -S bash-mcp -X quit && bash ~/projects/bash-mcp/infra/launcher.sh`.
 
 For non-trivial gaps or batch additions, treat it as a quarterly review (see AGENTS.md).
 
 ### Adjust rotation / concurrency limits
 
-- Change the systemd unit (`infra/systemd/bash-mcp.service`), `Environment=BASH_MCP_AUDIT_MAX_BYTES=...`, etc.
-- `systemctl --user daemon-reload && systemctl --user restart bash-mcp.service`
+- Change the `Environment=` lines in `infra/systemd/bash-mcp.service` (the reference unit) or export the variable before starting the launcher.
+- Restart: `screen -S bash-mcp -X quit && bash ~/projects/bash-mcp/infra/launcher.sh`
 - Verify via `bash_mcp_status()` that the new values are loaded.
 
 ### Test the hook manually
@@ -482,17 +504,17 @@ For non-trivial gaps or batch additions, treat it as a quarterly review (see AGE
 ```bash
 # Should deny (abort)
 echo '{"input":{"toolName":"bash","toolArgs":{"command":"wsl -d Ubuntu -- bash -c \"echo hi\""}},"output":{}}' \
-  | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js
+  | node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js
 # => {"_abort":{"reason":"..."}}
 
 # Should pass
 echo '{"input":{"toolName":"bash","toolArgs":{"command":"git status"}},"output":{}}' \
-  | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js
+  | node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js
 # => {}
 
 # Should pass (escape hatch)
 echo '{"input":{"toolName":"bash","toolArgs":{"command":"BASH_MCP_SKIP=1 wsl echo"}},"output":{}}' \
-  | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js
+  | node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js
 # => {}
 ```
 

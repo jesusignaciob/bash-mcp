@@ -90,7 +90,7 @@ if (matched) {
     `  - bash_mcp_classify({command})                  // pre-flight denylist check`,
     ``,
     `Need a one-off bypass? Prepend BASH_MCP_SKIP=1 to the command, or add a \`# bash-mcp:skip\` line.`,
-    `See C:\\Users\\jesus\\.mavis\\skills\\bash-mcp\\SKILL.md for the full tool reference.`,
+    `See C:\\Users\\jesus\\.minimax\\skills\\bash-mcp\\SKILL.md for the full tool reference.`,
   ].join("\n");
   process.stdout.write(JSON.stringify({ _abort: { reason } }));
   process.exit(0);

@@ -41,12 +41,12 @@ infra/                                  # deployment artifacts (v0.2+)
 ├── launcher.sh                         # WSL bootstrap (parallel to semantic-memory-launcher.sh)
 ├── update-ip.sh                        # refresh WSL IP in mcp.json (parallel)
 ├── mcp.json.snippet                    # documentation reference
-├── systemd/bash-mcp.service            # canonical unit
+├── systemd/bash-mcp.service            # reference unit (screen ExecStart) — systemd is OFF on this WSL
 ├── hooks/
 │   ├── bash-mcp-redirect.md            # PreToolUse hook (deployed to ~/.minimax/agents/mavis/hooks/)
 │   └── bash-mcp-redirect.js            # Node script invoked by the hook
 ├── skills/bash-mcp/
-│   ├── SKILL.md                        # deployed to ~/.mavis/skills/bash-mcp/
+│   ├── SKILL.md                        # deployed to ~/.minimax/skills/bash-mcp/
 │   └── _meta.json
 └── windows/                            # Windows-side deployment helpers
     ├── BashMcp-WSL-Bootstrap.xml       # Scheduled Task template (Logon trigger)
@@ -68,15 +68,35 @@ Test:
 uv run pytest tests/ -v
 ```
 
+## Runtime reality: this WSL has `systemd=false`
+
+`/etc/wsl.conf` on this machine sets `systemd=false`, so PID 1 is not systemd and
+`systemctl --user` fails with `Failed to connect to bus`. Consequences:
+
+- **`systemctl --user start bash-mcp.service` is a silent no-op.** The old
+  `infra/launcher.sh` called it and reported success while nothing started —
+  bash-mcp did not come back after a reboot.
+- **The server runs in a `screen` session** named `bash-mcp`, started by
+  `infra/launcher.sh` (waits for port 54321, retries up to 3 times).
+  `infra/systemd/bash-mcp.service` is kept only as the reference for the
+  `Environment=` lines and the `screen` `ExecStart`.
+- **`screen` needs `SCREENDIR`** — `/run/screen` is not writable on this image,
+  so use `SCREENDIR=/tmp/screen` (the launcher already exports it).
+- **The Windows Scheduled Task is not registered.** `infra/windows/BashMcp-WSL-Bootstrap.xml`
+  ships in the repo, but `BashMcp-WSL-Bootstrap` is absent from Task Scheduler
+  on this machine. Until it is registered, start bash-mcp manually after a reboot.
+
+Always verify with `bash_mcp_status()` (server-side truth), never with `systemctl`.
+
 ## Conventions for future edits
 
 - **Adding a tool**: register via `@mcp.tool` in `server.py`. Read-only tools don't need audit. Mutating tools should write to `audit.log(...)` and respect `Class.REJECT` (hard floor).
 - **Adding a denylist pattern** (incremental change, single pattern):
   1. Add to `REJECT_PATTERNS` (hard) or `DANGEROUS_PATTERNS` (soft) in `src/bash_mcp/safety.py`.
   2. Add a parametrized test case in `tests/test_safety.py` (≥3 cases: positive + negative to catch false positives).
-  3. Update the safety table in `README.md` and the deployed `~/.mavis/skills/bash-mcp/SKILL.md` (Safety Model section).
+  3. Update the safety table in `README.md` and the deployed `~/.minimax/skills/bash-mcp/SKILL.md` (Safety Model section).
   4. **Append a dated line** to the review-history block at the top of `safety.py` (see quarterly review below).
-  5. Run tests, then `systemctl --user restart bash-mcp.service` so the new pattern is live.
+  5. Run tests, then restart the server so the new pattern is live: `screen -S bash-mcp -X quit && bash ~/projects/bash-mcp/infra/launcher.sh`.
 
 - **Quarterly denylist review** (batch additions, ~every 90 days):
   - Open the review-history block at the top of `safety.py`. The previous review is the starting point.
@@ -88,7 +108,7 @@ uv run pytest tests/ -v
 - **Changing the port**: update BOTH `infra/systemd/bash-mcp.service` `Environment=FASTMCP_SERVER_PORT=` AND `infra/update-ip.sh` `sed` pattern AND `mcp.json` `url` field. Use the [IANA dynamic range](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xml) (49152-65535) to minimize collision risk.
 - **Changing the WSL IP**: run `./infra/update-ip.sh`. It rewrites only the `bash-mcp` URL in `mcp.json` (and Cursor's, if present). Does not touch `semantic-memory` URLs.
 - **Deploying to a fresh WSL/Windows setup**: run `./infra/install.sh`. It idempotently copies the systemd unit, hook, skill, and mcp.json entry, and prints the manual `mavis mcp create` command for Windows PowerShell.
-- **Adding an enforcement layer**: update `C:\Users\jesus\.mavis\skills\bash-mcp\SKILL.md` (source: `infra/skills/bash-mcp/SKILL.md`) AND `C:\Users\jesus\.minimax\agents\mavis\hooks\bash-mcp-redirect.md` (source: `infra/hooks/bash-mcp-redirect.{md,js}`) AND the `description` field in `mcp.json` AND `infra/system-prompt-addendum.md` (deployed manually via the desktop mavis tool) — **four places** that share the same escape hatch name (`BASH_MCP_SKIP=1`) and cross-reference each other. Keep them in sync.
+- **Adding an enforcement layer**: update `C:\Users\jesus\.minimax\skills\bash-mcp\SKILL.md` (source: `infra/skills/bash-mcp/SKILL.md`) AND `C:\Users\jesus\.minimax\agents\mavis\hooks\bash-mcp-redirect.md` (source: `infra/hooks/bash-mcp-redirect.{md,js}`) AND the `description` field in `mcp.json` AND `infra/system-prompt-addendum.md` (deployed manually via the desktop mavis tool) — **four places** that share the same escape hatch name (`BASH_MCP_SKIP=1`) and cross-reference each other. Keep them in sync.
 
 ## Don't
 
@@ -100,16 +120,16 @@ uv run pytest tests/ -v
 
 ## When the user asks about bash-mcp
 
-1. If they're asking how to install / use it → point them to `README.md` (Phase 4 deliverable) and the skill at `C:\Users\jesus\.mavis\skills\bash-mcp\SKILL.md`.
+1. If they're asking how to install / use it → point them to `README.md` (Phase 4 deliverable) and the skill at `C:\Users\jesus\.minimax\skills\bash-mcp\SKILL.md`.
 2. If they're asking why a command was rejected → check the audit log: `tail ~/.local/share/bash-mcp/audit.jsonl`. The `matched_pattern` field tells which regex fired.
-3. If they're debugging the hook → test it manually: `echo '<json>' | wsl -d Ubuntu-22.04 -- node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js`. Use `BASH_MCP_SKIP=1` prefix for pass-through tests.
+3. If they're debugging the hook → test it manually (inside WSL): `echo '<json>' | node /home/jbecerra/projects/bash-mcp/infra/hooks/bash-mcp-redirect.js`. Use `BASH_MCP_SKIP=1` prefix for pass-through tests.
 4. If the WSL IP changed → run `./infra/update-ip.sh`.
-5. If the service is down → `systemctl --user status bash-mcp.service`, then `systemctl --user restart bash-mcp.service`.
+5. If the server is down → `screen -ls` (expect a `bash-mcp` session), then `bash ~/projects/bash-mcp/infra/launcher.sh` (idempotent). Verify with `bash_mcp_status()`. Do NOT use `systemctl --user` — it is a no-op here (see below).
 
 
 ## v0.6 sessions (added 2026-09-12)
 
-Four new tools exposed under `bash-mcp_session_*`:
+Four new tools exposed under `bash_mcp_session_*`:
 
 - `bash_mcp_session_create(name?, cwd?) -> {session_id, ...}`
 - `bash_mcp_session_run(session_id, command, timeout_ms?, dangerous?) -> result`
