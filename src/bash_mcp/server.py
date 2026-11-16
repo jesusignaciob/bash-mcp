@@ -18,16 +18,22 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from bash_mcp import __version__, audit, sessions
+from bash_mcp import __version__, audit, session_store, sessions
 from bash_mcp.sessions import (
     MAX_SESSION_NAME_LEN,
+    MAX_SHARED_ENVS,
+    SharedEnvNotFoundError,
     active_count,
     apply_state_update,
+    bind_shared_env as session_bind_shared_env,
     create as session_create,
     destroy as session_destroy,
+    fork as session_fork,
     get as session_get,
     list_active as session_list_active,
+    run_environment as session_run_environment,
     snapshot_for_run,
+    unbind_shared_env_name as session_unbind_shared_env_name,
 )
 from bash_mcp import discovery
 from bash_mcp.concurrency import MAX_CONCURRENT, active as concurrency_active, slot as concurrency_slot
@@ -42,6 +48,28 @@ from bash_mcp.executor import (
 from bash_mcp.safety import Class, Classification, classify  # classify is also exposed as a tool
 
 mcp = FastMCP("bash-mcp")
+
+# Fallback for `_registered_tool_names()` — only used if FastMCP's private
+# tool manager is no longer reachable.
+_FALLBACK_TOOL_NAMES = (
+    "bash_run_command",
+    "bash_check_env",
+    "bash_list_binaries",
+    "bash_which",
+    "bash_mcp_status",
+    "bash_mcp_classify",
+    "bash_mcp_audit_read",
+    "bash_mcp_session_create",
+    "bash_mcp_session_run",
+    "bash_mcp_session_destroy",
+    "bash_mcp_session_list",
+    "bash_mcp_session_fork",
+    "bash_mcp_env_share",
+    "bash_mcp_env_list",
+    "bash_mcp_env_delete",
+    "bash_mcp_session_bind_env",
+    "echo",
+)
 
 # Module-level state for the status tool
 _START_TIME = time.time()
@@ -361,6 +389,20 @@ def bash_which(name: str) -> dict[str, Any]:
     return discovery.which(name)
 
 
+def _registered_tool_names() -> list[str]:
+    """The tools this server exposes.
+
+    Derived from the FastMCP tool manager so a new `@mcp.tool` never has
+    to be added to a second, hand-maintained list — that drift is exactly
+    what the e2e suite used to catch. Falls back to a static list if the
+    private attribute ever moves.
+    """
+    try:
+        return sorted(mcp._tool_manager._tools.keys())
+    except Exception:  # pragma: no cover - depends on FastMCP internals
+        return sorted(_FALLBACK_TOOL_NAMES)
+
+
 @mcp.tool
 def bash_mcp_status() -> dict[str, Any]:
     """Return health/stats for the bash-mcp service.
@@ -397,6 +439,8 @@ def bash_mcp_status() -> dict[str, Any]:
                         break
         except (OSError, ValueError):
             pass
+
+    shared_envs = session_store.list_shared_envs()
 
     return {
         "service": "active",
@@ -435,22 +479,332 @@ def bash_mcp_status() -> dict[str, Any]:
             "pid": pid,
             "rss_bytes": rss_bytes,
         },
-        "tools": [
-            "bash_run_command",
-            "bash_check_env",
-            "bash_list_binaries",
-            "bash_which",
-            "bash_mcp_status",
-            "bash_mcp_classify",
-            "bash_mcp_audit_read",
-            "bash_mcp_session_create",
-            "bash_mcp_session_run",
-            "bash_mcp_session_destroy",
-            "bash_mcp_session_list",
-            "echo",
-        ],
+        "shared_envs": {
+            "count": len(shared_envs),
+            "names": [e["name"] for e in shared_envs],
+        },
+        "tools": _registered_tool_names(),
     }
 
+
+
+# --- v0.11: session fork + shared environments ---
+
+
+@mcp.tool
+def bash_mcp_session_fork(
+    session_id: str,
+    name: str | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    """Fork a session into an independent copy.
+
+    The copy starts with the parent's `cwd` and its own `env` exactly as
+    they are right now; the parent is not modified. A shared-env binding
+    is inherited by reference, so the copy keeps seeing that env live.
+
+    Use it to try a different branch of work without losing the state you
+    already built up.
+
+    Args:
+        session_id: The session to copy.
+        name: Optional name for the copy. Defaults to `<parent>-fork`.
+        cwd: Optional working directory. Defaults to the parent's cwd.
+
+    Returns:
+        {session_id, name, cwd, env_count, shared_env, forked_from, audit_id}
+        On missing session: {error: {code: SESSION_NOT_FOUND, ...}}.
+        On invalid cwd:    {error: {code: INVALID_CWD, ...}}.
+    """
+    audit_id = audit.new_audit_id()
+
+    parent = session_get(session_id)
+    if parent is None:
+        return make_error_response(
+            code="SESSION_NOT_FOUND",
+            message=f"No active session with id '{session_id}'.",
+            hint=(
+                "Check bash_mcp_session_list for active session ids. "
+                "A session can only be forked while it is alive."
+            ),
+            audit_id=audit_id,
+        )
+
+    try:
+        state = session_fork(session_id, name=name, cwd=cwd)
+    except InvalidCwdError as e:
+        return make_error_response(
+            code="INVALID_CWD",
+            message=str(e),
+            hint=_hint_for_invalid_cwd(cwd or parent.cwd),
+            audit_id=audit_id,
+        )
+    except ValueError as e:
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message=str(e),
+            hint=f"name must be a string ≤{MAX_SESSION_NAME_LEN} chars.",
+            audit_id=audit_id,
+        )
+
+    audit.log({
+        "ts": audit_id.split("-")[0] if "-" in audit_id else "",
+        "audit_id": audit_id,
+        "tool": "bash_mcp_session_fork",
+        "args": {
+            "session_id": state.session_id,
+            "forked_from": parent.session_id,
+            "name": state.name,
+            "cwd": state.cwd,
+        },
+        "outcome": "CREATED",
+        "session_id": state.session_id,
+    })
+
+    return {
+        "session_id": state.session_id,
+        "name": state.name,
+        "cwd": state.cwd,
+        "created_at": state.created_at,
+        "last_used_at": state.last_used_at,
+        "env_count": len(state.env),
+        "shared_env": state.shared_env,
+        "forked_from": parent.session_id,
+        "audit_id": audit_id,
+    }
+
+
+@mcp.tool
+def bash_mcp_env_share(
+    name: str,
+    vars: dict[str, str],
+    unset: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create or update a named shared environment.
+
+    A shared env is a dict of environment variables that several sessions
+    can subscribe to (see `bash_mcp_session_bind_env`). It is re-read on
+    every run, so updating it here propagates to every subscribed session
+    on its next command — useful for rotating a token or a project flag.
+
+    `vars` merges into the env (a key that already exists is overwritten);
+    `unset` removes keys from it.
+
+    The values are write-only: they are applied to the commands but never
+    echoed back, and only the key names are audited.
+
+    Args:
+        name: The name of the shared env.
+        vars: Variables to merge in.
+        unset: Variable names to remove.
+
+    Returns:
+        {name, env_count, env_keys, audit_id}
+        On invalid input: {error: {code: INVALID_ARGUMENT, ...}}.
+    """
+    audit_id = audit.new_audit_id()
+
+    if not isinstance(name, str) or not name.strip():
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message="name must be a non-empty string.",
+            hint="Give the shared env a short name, e.g. 'api'.",
+            audit_id=audit_id,
+        )
+    if len(name) > MAX_SESSION_NAME_LEN:
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message=f"name exceeds {MAX_SESSION_NAME_LEN} chars (got {len(name)}).",
+            hint=f"Shorten the name to {MAX_SESSION_NAME_LEN} chars or fewer.",
+            audit_id=audit_id,
+        )
+    if not isinstance(vars, dict):
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message=f"vars must be a dict, got {type(vars).__name__}.",
+            hint="Pass the variables as a mapping of name -> value.",
+            audit_id=audit_id,
+        )
+    unset_keys = list(unset or [])
+    if not vars and not unset_keys:
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message="nothing to change: vars is empty and unset is empty.",
+            hint="Pass the variables to set, or the names to remove.",
+            audit_id=audit_id,
+        )
+
+    existing = session_store.load_shared_env(name)
+    if existing is None and len(session_store.list_shared_envs()) >= MAX_SHARED_ENVS:
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message=f"too many shared envs (limit {MAX_SHARED_ENVS}).",
+            hint="Delete an unused one with bash_mcp_env_delete.",
+            audit_id=audit_id,
+        )
+
+    merged = dict(existing or {})
+    for key, value in vars.items():
+        merged[str(key)] = str(value)
+    for key in unset_keys:
+        merged.pop(str(key), None)
+
+    if len(merged) > sessions.MAX_ENV_VARS:
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message=(
+                f"shared env would hold {len(merged)} variables "
+                f"(limit {sessions.MAX_ENV_VARS})."
+            ),
+            hint="Remove some variables before sharing them.",
+            audit_id=audit_id,
+        )
+
+    session_store.save_shared_env(name, merged)
+
+    audit.log({
+        "ts": audit_id.split("-")[0] if "-" in audit_id else "",
+        "audit_id": audit_id,
+        "tool": "bash_mcp_env_share",
+        # Keys only, never values: the values may be secrets.
+        "args": {"name": name, "keys": sorted(merged.keys())},
+        "outcome": "SHARED",
+    })
+
+    return {
+        "name": name,
+        "env_count": len(merged),
+        "env_keys": sorted(merged.keys()),
+        "audit_id": audit_id,
+    }
+
+
+@mcp.tool
+def bash_mcp_env_list() -> dict[str, Any]:
+    """List the shared environments and the sessions subscribed to them.
+
+    Only names, key names and counts are exposed — never the values.
+
+    Returns:
+        {envs: [{name, env_count, env_keys, created_at, updated_at,
+                 sessions: [session_id, ...]}], count: N}
+    """
+    envs = session_store.list_shared_envs()
+    bindings = session_store.load_bindings()
+    for entry in envs:
+        entry["sessions"] = sorted(
+            sid for sid, bound in bindings.items() if bound == entry["name"]
+        )
+    return {"envs": envs, "count": len(envs)}
+
+
+@mcp.tool
+def bash_mcp_env_delete(name: str) -> dict[str, Any]:
+    """Delete a shared environment and unsubscribe the sessions using it.
+
+    The sessions themselves are NOT destroyed; they simply stop seeing the
+    shared variables.
+
+    Args:
+        name: The name of the shared env.
+
+    Returns:
+        {ok: true, name, unbound_sessions: N, audit_id}
+        On missing env: {error: {code: SHARED_ENV_NOT_FOUND, ...}}.
+    """
+    audit_id = audit.new_audit_id()
+
+    if session_store.load_shared_env(name) is None:
+        return make_error_response(
+            code="SHARED_ENV_NOT_FOUND",
+            message=f"No shared env named '{name}'.",
+            hint="List them with bash_mcp_env_list.",
+            audit_id=audit_id,
+        )
+
+    unbound = session_store.delete_shared_env(name)
+    session_unbind_shared_env_name(name)
+
+    audit.log({
+        "ts": audit_id.split("-")[0] if "-" in audit_id else "",
+        "audit_id": audit_id,
+        "tool": "bash_mcp_env_delete",
+        "args": {"name": name},
+        "outcome": "DELETED",
+    })
+
+    return {
+        "ok": True,
+        "name": name,
+        "unbound_sessions": unbound,
+        "audit_id": audit_id,
+    }
+
+
+@mcp.tool
+def bash_mcp_session_bind_env(
+    session_id: str,
+    env_name: str | None = None,
+) -> dict[str, Any]:
+    """Subscribe a session to a shared environment (or unsubscribe it).
+
+    A subscribed session sees the shared variables on every command, on
+    top of its own env; its own env wins when both define the same key.
+    One shared env per session — binding again replaces the previous one.
+
+    Args:
+        session_id: The session to bind.
+        env_name: The shared env to bind. Omit it (or pass null) to
+                  unsubscribe the session from whatever it was bound to.
+
+    Returns:
+        {ok: true, session_id, shared_env, audit_id}
+        On missing session: {error: {code: SESSION_NOT_FOUND, ...}}.
+        On missing env:    {error: {code: SHARED_ENV_NOT_FOUND, ...}}.
+    """
+    audit_id = audit.new_audit_id()
+
+    if session_get(session_id) is None:
+        return make_error_response(
+            code="SESSION_NOT_FOUND",
+            message=f"No active session with id '{session_id}'.",
+            hint="Check bash_mcp_session_list for active session ids.",
+            audit_id=audit_id,
+        )
+
+    try:
+        session_bind_shared_env(session_id, env_name)
+    except SharedEnvNotFoundError as e:
+        return make_error_response(
+            code="SHARED_ENV_NOT_FOUND",
+            message=str(e),
+            hint="Create it with bash_mcp_env_share, or list them with bash_mcp_env_list.",
+            audit_id=audit_id,
+        )
+    except ValueError as e:
+        return make_error_response(
+            code="INVALID_ARGUMENT",
+            message=str(e),
+            hint="env_name must be a non-empty string.",
+            audit_id=audit_id,
+        )
+
+    audit.log({
+        "ts": audit_id.split("-")[0] if "-" in audit_id else "",
+        "audit_id": audit_id,
+        "tool": "bash_mcp_session_bind_env",
+        "args": {"session_id": session_id, "env_name": env_name},
+        "outcome": "BOUND" if env_name else "UNBOUND",
+        "session_id": session_id,
+    })
+
+    state = session_get(session_id)
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "shared_env": state.shared_env if state else None,
+        "audit_id": audit_id,
+    }
 
 
 # --- v0.7: denylist explainer ---
@@ -631,9 +985,15 @@ def bash_mcp_session_run(
     """
     audit_id = audit.new_audit_id()
 
-    # Step 1: snapshot session cwd + env (under lock, then release).
-    session_cwd, session_env = snapshot_for_run(session_id)
-    if session_env is None:
+    # The session's OWN env keys (the shared ones are reported apart).
+    state_before = session_get(session_id)
+    local_env_keys = sorted(state_before.env.keys()) if state_before else []
+
+    # Step 1: resolve the session cwd + env. The shared env (if any) is the
+    # base and the session's own env wins on a key clash. The shared env is
+    # re-read from the store on every call — that is what makes it live.
+    env_bundle = session_run_environment(session_id)
+    if env_bundle is None:
         return make_error_response(
             code="SESSION_NOT_FOUND",
             message=f"No active session with id '{session_id}'.",
@@ -644,6 +1004,8 @@ def bash_mcp_session_run(
             ),
             audit_id=audit_id,
         )
+
+    session_cwd, session_env, shared_env_name = env_bundle
 
     # Step 2: classify (same rules as bash_run_command).
     cls: Classification = classify(command)
@@ -704,12 +1066,10 @@ def bash_mcp_session_run(
             classification=cls.to_dict(),
         )
 
-    # Step 3: build env — inherit process env + session env + caller env
-    # (caller wins). Same shape as bash_run_command.
+    # Step 3: build env — process env < shared env < session env.
+    # `session_env` already carries the shared env layered underneath.
     full_env = os.environ.copy()
-    if session_env:
-        for k, v in session_env.items():
-            full_env[k] = v
+    full_env.update(session_env)
 
     # Step 4: execute via executor.run (which already wraps concurrency.slot()).
     try:
@@ -780,7 +1140,8 @@ def bash_mcp_session_run(
     else:
         # Destroyed during the run — best-effort fallback.
         payload["cwd"] = session_cwd
-        payload["env_keys"] = sorted(session_env.keys()) if session_env else []
+        payload["env_keys"] = local_env_keys
+    payload["shared_env"] = shared_env_name
     if dangerous and cls.cls == Class.DANGEROUS:
         payload["warning"] = "Executed with dangerous=true override"
     return payload

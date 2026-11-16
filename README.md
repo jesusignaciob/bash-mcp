@@ -18,6 +18,64 @@ Running WSL commands from PowerShell (`wsl -d Ubuntu-22.04 -- bash -lc "..."`) h
 
 [MIT](LICENSE)
 
+## What's new in v0.11.0
+
+- **`bash_mcp_session_fork(session_id, name?, cwd?)`** — a session can now be
+  branched. The copy starts with the parent's `cwd` and its own `env` exactly
+  as they are at that instant, and the parent is left untouched: it is a
+  branch, not a move. A shared-env binding is inherited *by reference*, so
+  the copy keeps seeing that env live. The fork is an ordinary session, so it
+  is persisted to disk like any other (v0.9).
+- **Shared environments** — a named dict of variables that several sessions
+  can subscribe to, re-read on **every** run. Rotating a token in the shared
+  env updates every subscribed session on its next command.
+  - `bash_mcp_env_share(name, vars, unset?)` — create or update a shared env
+    (`vars` merges, `unset` removes keys).
+  - `bash_mcp_env_list()` — the shared envs and the sessions subscribed to each.
+  - `bash_mcp_env_delete(name)` — delete it and unsubscribe the sessions.
+  - `bash_mcp_session_bind_env(session_id, env_name?)` — subscribe a session;
+    omit `env_name` to unsubscribe.
+  - **Layering:** `os.environ` < shared env < the session's own env. The
+    session's own value wins when both define the same key.
+  - **One shared env per session**; binding again replaces the previous one.
+  - **The values are write-only.** They are applied to the commands but never
+    echoed back: `env_share` and `env_list` return key names and counts only,
+    and the audit log records keys, never values — same rule as the rest of
+    the audit trail.
+- **17 tools** (up from 12). `bash_mcp_status` now derives the tool list from
+  the FastMCP tool manager instead of a hand-maintained list, so a new tool
+  can never drift out of sync.
+- 422 tests passing (up from 347).
+
+## What's new in v0.11.0
+
+- **`bash_mcp_session_fork(session_id, name?, cwd?)`** — a session can now be
+  branched. The copy starts with the parent's `cwd` and its own `env` exactly
+  as they are at that instant, and the parent is left untouched: it is a
+  branch, not a move. A shared-env binding is inherited *by reference*, so
+  the copy keeps seeing that env live. The fork is an ordinary session, so it
+  is persisted to disk like any other (v0.9).
+- **Shared environments** — a named dict of variables that several sessions
+  can subscribe to, re-read on **every** run. Rotating a token in the shared
+  env updates every subscribed session on its next command.
+  - `bash_mcp_env_share(name, vars, unset?)` — create or update a shared env
+    (`vars` merges, `unset` removes keys).
+  - `bash_mcp_env_list()` — the shared envs and the sessions subscribed to each.
+  - `bash_mcp_env_delete(name)` — delete it and unsubscribe the sessions.
+  - `bash_mcp_session_bind_env(session_id, env_name?)` — subscribe a session;
+    omit `env_name` to unsubscribe.
+  - **Layering:** `os.environ` < shared env < the session's own env. The
+    session's own value wins when both define the same key.
+  - **One shared env per session**; binding again replaces the previous one.
+  - **The values are write-only.** They are applied to the commands but never
+    echoed back: `env_share` and `env_list` return key names and counts only,
+    and the audit log records keys, never values — same rule as the rest of
+    the audit trail.
+- **17 tools** (up from 12). `bash_mcp_status` now derives the tool list from
+  the FastMCP tool manager instead of a hand-maintained list, so a new tool
+  can never drift out of sync.
+- 422 tests passing (up from 347).
+
 ## What's new in v0.10.0
 
 - **The gzip-on-rotation pass no longer destroys backups.** The v0.7 gzip pass
@@ -128,6 +186,16 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
 | `bash_mcp_session_run(session_id, command, ...)` | Run a command in a session; persists `cd` / `export` / `unset`. |
 | `bash_mcp_session_destroy(session_id)` | Destroy a session, free memory, drop the disk row. |
 | `bash_mcp_session_list()` | List active sessions, most-recently-used first (includes sessions restored on boot). |
+| `bash_mcp_session_fork(session_id, name?, cwd?)` | Branch a session: copy its `cwd` + `env` into a new, independent session. v0.11. |
+| `bash_mcp_env_share(name, vars, unset?)` | Create or update a named shared environment. v0.11. |
+| `bash_mcp_env_list()` | List the shared environments and their subscribers (keys only, never values). v0.11. |
+| `bash_mcp_env_delete(name)` | Delete a shared environment and unsubscribe its sessions. v0.11. |
+| `bash_mcp_session_bind_env(session_id, env_name?)` | Subscribe a session to a shared env (omit `env_name` to unsubscribe). v0.11. |
+| `bash_mcp_session_fork(session_id, name?, cwd?)` | Branch a session: copy its `cwd` + `env` into a new, independent session. v0.11. |
+| `bash_mcp_env_share(name, vars, unset?)` | Create or update a named shared environment. v0.11. |
+| `bash_mcp_env_list()` | List the shared environments and their subscribers (keys only, never values). v0.11. |
+| `bash_mcp_env_delete(name)` | Delete a shared environment and unsubscribe its sessions. v0.11. |
+| `bash_mcp_session_bind_env(session_id, env_name?)` | Subscribe a session to a shared env (omit `env_name` to unsubscribe). v0.11. |
 | `bash_mcp_classify(command)` | Read-only denylist explainer; returns `{class, matched_pattern, hint, would_execute, ...}`. v0.7. |
 | `bash_mcp_audit_read(backup_index, max_entries?, tool_filter?)` | Read entries from a rotated audit backup (plaintext or gzip). v0.7.1. |
 
@@ -228,6 +296,14 @@ All via environment variables. Set them in the `Environment=` lines of `infra/sy
 | `BASH_MCP_MAX_CONCURRENT` | `8` | Max in-flight subprocesses |
 | `BASH_MCP_SESSION_PERSIST` | `1` | Persist sessions to disk (v0.9). `0` = off |
 | `BASH_MCP_SESSION_DB_PATH` | `$XDG_DATA_HOME/bash-mcp/sessions.db` | Session store location (v0.9) |
+
+Shared environments live in the same SQLite file (tables `shared_envs` and
+`session_env_bindings`). Limits: at most `MAX_ENV_VARS` (256) variables per
+shared env and `MAX_SHARED_ENVS` (64) shared envs in total.
+
+Shared environments live in the same SQLite file (tables `shared_envs` and
+`session_env_bindings`). Limits: at most `MAX_ENV_VARS` (256) variables per
+shared env and `MAX_SHARED_ENVS` (64) shared envs in total.
 
 ### `.bash-mcp.toml` (per-project cwd allowlist, v0.8)
 
@@ -530,15 +606,15 @@ bash-mcp/
 ├── pyproject.toml                   # uv-managed, FastMCP 2.7.0
 ├── uv.lock
 ├── src/bash_mcp/                    # server code
-│   ├── server.py                    # FastMCP + 12 tools
+│   ├── server.py                    # FastMCP + 17 tools
 │   ├── executor.py                  # subprocess wrapper, timeout, truncation, cwd allowlist, concurrency slot
 │   ├── safety.py                    # classify(command) + quarterly denylist reviews
 │   ├── audit.py                     # JSONL append-only logger + size-based rotation
 │   ├── discovery.py                 # which / list_binaries (thread-pool)
 │   ├── concurrency.py               # BoundedSemaphore wrapper
-│   ├── sessions.py                  # stateful sessions (cwd + env across calls)
+│   ├── sessions.py                  # stateful sessions (cwd + env across calls) + fork + shared envs + fork + shared envs
 │   └── project_allowlist.py         # per-project .bash-mcp.toml resolution
-├── tests/                           # 357 tests (24 e2e need a live server)
+├── tests/                           # 422 tests (24 e2e need a live server)
 │   ├── conftest.py                  # session-store isolation + the live_server gate
 │   ├── live_server.py               # live-server probe + run/skip/fail decision matrix
 │   ├── test_safety.py               # denylist cases
@@ -550,9 +626,15 @@ bash-mcp/
 │   ├── test_audit_read.py           # bash_mcp_audit_read cases
 │   ├── test_classify_tool.py        # bash_mcp_classify cases
 │   ├── test_concurrency.py          # concurrency limit cases
+│   ├── test_session_store.py        # SQLite store + shared envs (v0.9 / v0.11)
 │   ├── test_sessions.py             # session create / run / destroy / list
 │   ├── test_sessions_ttl.py         # idle TTL janitor
+│   ├── test_sessions_persistence.py # session persistence (v0.9)
+│   ├── test_server_persistence.py   # status + boot restore (v0.9)
 │   ├── test_project_allowlist.py    # .bash-mcp.toml resolution
+│   ├── test_session_fork.py         # session forking (v0.11)
+│   ├── test_shared_env.py           # shared environments (v0.11)
+│   ├── test_session_tools.py        # the v0.11 tools + live layering (v0.11)
 │   ├── test_live_server_probe.py    # probe decision matrix
 │   └── test_e2e.py                  # live-server round-trips
 └── infra/                           # deployment artifacts
@@ -655,8 +737,8 @@ cd /home/jbecerra/projects/bash-mcp
 
 - **Persistent shell state (PTY-based)** — v0.6 sessions are best-effort regex parsing of `cd` / `export` / `unset`. v0.7 could keep a real `bash` process alive per session (via `pexpect` or similar) and track shell variables, aliases, functions, `set -e` / `pipefail`, and job control. Requires a redesign of the session lifecycle and a hard cap on concurrent shells (memory + fd cost).
 - ~~**Disk persistence for sessions**~~ — **shipped in v0.9** (SQLite store in `session_store.py`, restored on boot, opt-out via `BASH_MCP_SESSION_PERSIST=0`). See "What's new in v0.9.0".
-- **Session snapshots** (`fork` a session at a point in time) — useful for branching workflows.
-- **Cross-session env sharing** — share a named env dict across multiple sessions.
+- ~~**Session snapshots** (`fork` a session at a point in time)~~ — **shipped in v0.11** as `bash_mcp_session_fork`: the copy is the snapshot. See "What's new in v0.11.0".
+- ~~**Cross-session env sharing**~~ — **shipped in v0.11** as the shared-env tools, live and one-per-session. See "What's new in v0.11.0".
 - **Web UI for browsing the audit log** — minimal Flask/FastAPI page on a separate port with filters by tool / classification / time.
 - ~~**Audit log compression**~~ — **shipped in v0.7.1** via `bash_mcp_audit_read` (closes the gzip one-way archival caveat) and **completed in v0.10**, which fixed the rotation pass that destroyed the oldest backup and turned the gzip threshold on by default (1 MiB). See "What's new in v0.7.1" and "What's new in v0.10.0". Remaining: audit log shipping (Loki/CloudWatch), still deferred.
 - **Audit log shipping** — Loki push API, CloudWatch Logs, or local syslog. Optional, gated by config.

@@ -51,6 +51,10 @@ from bash_mcp import project_allowlist, session_store
 
 
 DEFAULT_MAX_ENV_VARS = 256
+
+# v0.11: how many shared envs may exist at the same time. Shared envs are
+# small, but they are not tied to a session lifetime, so they need a cap.
+MAX_SHARED_ENVS = 64
 MAX_SESSION_NAME_LEN = 64
 SESSION_ID_PREFIX = "s_"
 
@@ -101,6 +105,10 @@ _UNSET_RE = re.compile(
 )
 
 
+class SharedEnvNotFoundError(RuntimeError):
+    """Raised when a named shared env does not exist."""
+
+
 @dataclass
 class SessionState:
     """A single session's persisted state."""
@@ -109,6 +117,9 @@ class SessionState:
     name: str
     cwd: str
     env: dict[str, str] = field(default_factory=dict)
+    # Name of the shared env this session subscribes to (v0.11). The binding
+    # lives in the store, not in the `sessions` table.
+    shared_env: str | None = None
     created_at: float = field(default_factory=time.time)
     last_used_at: float = field(default_factory=time.time)
 
@@ -122,6 +133,7 @@ class SessionState:
             "last_used_at": self.last_used_at,
             "env_count": len(self.env),
             "env_keys": sorted(self.env.keys()),
+            "shared_env": self.shared_env,
         }
 
 
@@ -331,17 +343,24 @@ def _parse_unsets(command: str) -> list[str]:
 # --- Public API ---
 
 
-def create(name: str | None = None, cwd: str | None = None) -> SessionState:
+def create(
+    name: str | None = None,
+    cwd: str | None = None,
+    shared_env: str | None = None,
+) -> SessionState:
     """Create a new session, register it, return the SessionState.
 
     Args:
         name: Optional human-readable label (≤ MAX_SESSION_NAME_LEN chars).
         cwd:  Optional starting working directory. Must be under an
               allowed root (same rules as `executor.run`).
+        shared_env: Optional name of a shared env to subscribe to (v0.11).
+                    The env must already exist.
 
     Raises:
         ValueError: name too long / wrong type.
         InvalidCwdError: cwd not allowed or doesn't exist.
+        SharedEnvNotFoundError: the named shared env does not exist.
     """
     if name is not None:
         if not isinstance(name, str):
@@ -351,6 +370,12 @@ def create(name: str | None = None, cwd: str | None = None) -> SessionState:
                 f"name exceeds {MAX_SESSION_NAME_LEN} chars (got {len(name)})"
             )
 
+    if shared_env is not None:
+        if not isinstance(shared_env, str) or not shared_env.strip():
+            raise ValueError("shared_env must be a non-empty string")
+        if session_store.load_shared_env(shared_env) is None:
+            raise SharedEnvNotFoundError(f"shared env '{shared_env}' does not exist")
+
     resolved_cwd = _resolve_cwd(cwd)
     session_id = _new_session_id()
     final_name = name if name is not None else _new_default_name(session_id)
@@ -359,14 +384,158 @@ def create(name: str | None = None, cwd: str | None = None) -> SessionState:
         session_id=session_id,
         name=final_name,
         cwd=resolved_cwd,
+        shared_env=shared_env,
     )
 
     with _LOCK:
         _SESSIONS[session_id] = state
 
+    if shared_env is not None:
+        session_store.bind_session_env(session_id, shared_env)
     _persist(state)
     _ensure_janitor()
     return state
+
+
+def fork(
+    session_id: str,
+    name: str | None = None,
+    cwd: str | None = None,
+) -> SessionState:
+    """Create an independent copy of a session (v0.11).
+
+    The copy starts with the parent's `cwd` and local `env` as they are
+    *right now*; the parent is not modified in any way. A shared-env
+    binding is inherited by reference, so the child keeps seeing that env
+    live.
+
+    Args:
+        session_id: The session to copy.
+        name: Optional name for the copy. Defaults to `<parent>-fork`.
+        cwd: Optional working directory for the copy. Defaults to the
+             parent's cwd.
+
+    Raises:
+        ValueError: no such session / bad name.
+        InvalidCwdError: cwd not allowed or doesn't exist.
+    """
+    parent = get(session_id)
+    if parent is None:
+        raise ValueError(f"no session with id '{session_id}'")
+
+    if name is not None:
+        if not isinstance(name, str):
+            raise ValueError(f"name must be str, got {type(name).__name__}")
+        if len(name) > MAX_SESSION_NAME_LEN:
+            raise ValueError(
+                f"name exceeds {MAX_SESSION_NAME_LEN} chars (got {len(name)})"
+            )
+
+    resolved_cwd = _resolve_cwd(cwd if cwd is not None else parent.cwd)
+    # Truncate the PARENT name (not the whole "parent-fork") so the
+    # suffix always survives when the parent name is already at the cap.
+    if name is not None:
+        final_name = name
+    else:
+        suffix = "-fork"
+        head = parent.name[: max(1, MAX_SESSION_NAME_LEN - len(suffix))]
+        final_name = f"{head}{suffix}"
+
+    child_id = _new_session_id()
+    child = SessionState(
+        session_id=child_id,
+        name=final_name,
+        cwd=resolved_cwd,
+        env=dict(parent.env),
+        shared_env=parent.shared_env,
+    )
+
+    with _LOCK:
+        _SESSIONS[child_id] = child
+
+    if child.shared_env is not None:
+        session_store.bind_session_env(child_id, child.shared_env)
+    _persist(child)
+    _ensure_janitor()
+    return child
+
+
+def bind_shared_env(session_id: str, env_name: str | None) -> None:
+    """Subscribe a session to a shared env, or unsubscribe it (v0.11).
+
+    `env_name=None` detaches the session from whatever it was bound to.
+    A session subscribes to at most one shared env; binding again replaces
+    the previous one.
+
+    Raises:
+        ValueError: no such session / bad name.
+        SharedEnvNotFoundError: the named shared env does not exist.
+    """
+    state = get(session_id)
+    if state is None:
+        raise ValueError(f"no session with id '{session_id}'")
+
+    if env_name is None:
+        with _LOCK:
+            state.shared_env = None
+        session_store.unbind_session_env(session_id)
+        return
+
+    if not isinstance(env_name, str) or not env_name.strip():
+        raise ValueError("env_name must be a non-empty string")
+    if session_store.load_shared_env(env_name) is None:
+        raise SharedEnvNotFoundError(f"shared env '{env_name}' does not exist")
+
+    with _LOCK:
+        state.shared_env = env_name
+    session_store.bind_session_env(session_id, env_name)
+
+
+def unbind_shared_env_name(env_name: str) -> int:
+    """Clear the in-memory binding of every session subscribed to `env_name`.
+
+    Called after the shared env is deleted from the store, so no session
+    keeps pointing at an env that no longer exists.
+
+    Returns the number of sessions cleared.
+    """
+    cleared = 0
+    with _LOCK:
+        for state in _SESSIONS.values():
+            if state.shared_env == env_name:
+                state.shared_env = None
+                cleared += 1
+    return cleared
+
+
+def run_environment(
+    session_id: str,
+) -> tuple[str | None, dict[str, str], str | None] | None:
+    """Return `(cwd, merged env, shared env name)` for a session.
+
+    The merged env layers the shared env (the base, re-read on every call
+    — that is what makes it live) under the session's own env, which wins
+    when both define the same key.
+
+    Returns None when the session does not exist.
+    """
+    if not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):
+        return None
+    with _LOCK:
+        state = _SESSIONS.get(session_id)
+        if state is None:
+            return None
+        cwd = state.cwd
+        local_env = dict(state.env)
+        shared_name = state.shared_env
+
+    shared_env: dict[str, str] = {}
+    if shared_name:
+        shared_env = session_store.load_shared_env(shared_name) or {}
+
+    merged = dict(shared_env)
+    merged.update(local_env)
+    return cwd, merged, shared_name
 
 
 def get(session_id: str) -> SessionState | None:
@@ -389,14 +558,33 @@ def destroy(session_id: str) -> int:
 
 
 def list_active() -> list[dict]:
-    """Return summaries of all active sessions, most-recently-used first."""
+    """Return summaries of all active sessions, most-recently-used first.
+
+    Each summary carries `shared_env` (the name it subscribes to) and
+    `shared_env_keys` (the keys of that env — never its values).
+    """
     with _LOCK:
         items = sorted(
             _SESSIONS.values(),
             key=lambda s: s.last_used_at,
             reverse=True,
         )
-        return [s.to_summary() for s in items]
+        snapshot = [(s.to_summary(), s.shared_env) for s in items]
+
+    # Read the shared envs outside the lock (I/O) and only once per name.
+    keys_by_name: dict[str, list[str]] = {}
+    for name in {n for _, n in snapshot if n}:
+        env = session_store.load_shared_env(name) or {}
+        keys_by_name[name] = sorted(env.keys())
+
+    out: list[dict] = []
+    for summary, shared_name in snapshot:
+        summary["shared_env"] = shared_name
+        summary["shared_env_keys"] = (
+            keys_by_name.get(shared_name, []) if shared_name else []
+        )
+        out.append(summary)
+    return out
 
 
 def active_count() -> int:
@@ -542,6 +730,21 @@ def restore() -> int:
         with _LOCK:
             _SESSIONS[session_id] = state
         restored += 1
+
+    # Re-attach the shared-env bindings (v0.11). A binding whose shared env
+    # no longer exists is an orphan: drop it instead of restoring a session
+    # that points at nothing.
+    existing_envs = {row["name"] for row in session_store.list_shared_envs()}
+    for sid, env_name in session_store.load_bindings().items():
+        with _LOCK:
+            state = _SESSIONS.get(sid)
+            if state is not None:
+                state.shared_env = env_name
+        if state is None or env_name not in existing_envs:
+            session_store.unbind_session_env(sid)
+            with _LOCK:
+                if state is not None:
+                    state.shared_env = None
 
     return restored
 

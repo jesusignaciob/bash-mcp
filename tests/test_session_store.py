@@ -134,3 +134,79 @@ def test_db_path_defaults_under_xdg_data_home(monkeypatch, tmp_path):
     monkeypatch.delenv("BASH_MCP_SESSION_DB_PATH", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert session_store.db_path() == tmp_path / "bash-mcp" / "sessions.db"
+
+# --- shared envs (v0.11) ---
+
+
+def test_save_shared_env_then_load_returns_the_env():
+    """A shared env round-trips through the store."""
+    session_store.save_shared_env("api", {"TOKEN": "t1", "REGION": "eu"})
+    env = session_store.load_shared_env("api")
+    assert env == {"TOKEN": "t1", "REGION": "eu"}
+
+
+def test_save_shared_env_twice_replaces_the_content():
+    """The store replaces the whole dict; merging happens a layer above."""
+    session_store.save_shared_env("api", {"A": "1", "B": "2"})
+    session_store.save_shared_env("api", {"A": "9"})
+    assert session_store.load_shared_env("api") == {"A": "9"}
+
+
+def test_load_shared_env_missing_returns_none():
+    assert session_store.load_shared_env("nope") is None
+
+
+def test_list_shared_envs_returns_keys_and_counts_but_never_values():
+    """The listing is safe to hand back to a caller: no values, only keys."""
+    session_store.save_shared_env("api", {"TOKEN": "secret-value"})
+    listed = session_store.list_shared_envs()
+    assert len(listed) == 1
+    entry = listed[0]
+    assert entry["name"] == "api"
+    assert entry["env_count"] == 1
+    assert entry["env_keys"] == ["TOKEN"]
+    assert "secret-value" not in repr(listed)
+
+
+def test_delete_shared_env_removes_it_and_its_bindings():
+    session_store.save_shared_env("api", {"TOKEN": "t1"})
+    session_store.bind_session_env(SID, "api")
+    session_store.bind_session_env(SID2, "api")
+
+    unbound = session_store.delete_shared_env("api")
+
+    assert unbound == 2
+    assert session_store.load_shared_env("api") is None
+    assert session_store.load_bindings() == {}
+
+
+def test_delete_shared_env_missing_returns_zero_unbound():
+    assert session_store.delete_shared_env("nope") == 0
+
+
+def test_bind_session_env_then_load_bindings():
+    session_store.bind_session_env(SID, "api")
+    assert session_store.load_bindings() == {SID: "api"}
+
+
+def test_bind_session_env_twice_replaces_the_binding():
+    """One shared env per session: rebinding replaces it."""
+    session_store.bind_session_env(SID, "api")
+    session_store.bind_session_env(SID, "other")
+    assert session_store.load_bindings() == {SID: "other"}
+
+
+def test_unbind_session_env_removes_the_binding():
+    session_store.bind_session_env(SID, "api")
+    session_store.unbind_session_env(SID)
+    assert session_store.load_bindings() == {}
+
+
+def test_delete_session_also_removes_its_binding():
+    """The store owns both tables: deleting a session clears its binding."""
+    session_store.save(SID, "demo", "/tmp", {}, 100.0, 200.0)
+    session_store.bind_session_env(SID, "api")
+
+    session_store.delete(SID)
+
+    assert session_store.load_bindings() == {}

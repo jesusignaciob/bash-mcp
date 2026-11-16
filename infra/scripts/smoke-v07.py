@@ -91,9 +91,15 @@ def main():
     section("bash_mcp_status")
     # ============================================================
     status = call_tool(sid, "bash_mcp_status")
-    check("version is 0.10.0", status.get("version") == "0.10.0", f"got {status.get('version')}")
-    check("12 tools registered", len(status.get("tools", [])) == 12, f"got {len(status.get('tools', []))}")
+    check("version is 0.11.0", status.get("version") == "0.11.0", f"got {status.get('version')}")
+    check("17 tools registered", len(status.get("tools", [])) == 17, f"got {len(status.get('tools', []))}")
     check("tools include bash_mcp_classify", "bash_mcp_classify" in status["tools"])
+    check("tools include the v0.11 tools",
+          all(t in status["tools"] for t in [
+              "bash_mcp_session_fork", "bash_mcp_env_share", "bash_mcp_env_list",
+              "bash_mcp_env_delete", "bash_mcp_session_bind_env",
+          ]),
+          f"got {status.get('tools')}")
     check("tools include 4 session tools",
           all(t in status["tools"] for t in [
               "bash_mcp_session_create", "bash_mcp_session_run",
@@ -498,6 +504,74 @@ def main():
                 _sh.rmtree(d, ignore_errors=True)
             except Exception:
                 pass
+
+    # ============================================================
+    section("session fork + shared env (v0.11)")
+    # ============================================================
+    parent = call_tool(sid, "bash_mcp_session_create",
+                        {"name": "smoke-parent", "cwd": "/tmp"})
+    sid_parent = parent.get("session_id")
+    call_tool(sid, "bash_mcp_session_run",
+              {"session_id": sid_parent, "command": "export FORKED=yes"})
+    forked = call_tool(sid, "bash_mcp_session_fork", {"session_id": sid_parent})
+    sid_fork = forked.get("session_id")
+    check("session_fork returns a new session",
+          forked.get("ok") is not False and sid_fork and sid_fork != sid_parent,
+          f"got {forked}")
+    check("session_fork reports forked_from",
+          forked.get("forked_from") == sid_parent, f"got {forked}")
+    listed = call_tool(sid, "bash_mcp_session_list")
+    sessions_list = listed.get("sessions", listed) if isinstance(listed, dict) else listed
+    fork_entry = next((s for s in sessions_list if s["session_id"] == sid_fork), None)
+    check("the fork inherits the parent's env",
+          fork_entry is not None and "FORKED" in fork_entry.get("env_keys", []),
+          f"got {fork_entry}")
+    call_tool(sid, "bash_mcp_session_run",
+              {"session_id": sid_fork, "command": "export CHILDONLY=1"})
+    listed = call_tool(sid, "bash_mcp_session_list")
+    sessions_list = listed.get("sessions", listed) if isinstance(listed, dict) else listed
+    parent_entry = next((s for s in sessions_list if s["session_id"] == sid_parent), None)
+    check("the fork does not write back to the parent",
+          parent_entry is not None and "CHILDONLY" not in parent_entry.get("env_keys", []),
+          f"got {parent_entry}")
+
+    shared = call_tool(sid, "bash_mcp_env_share",
+                       {"name": "smoke-api", "vars": {"SMOKE_TOKEN": "one"}})
+    check("env_share returns the key names", shared.get("env_keys") == ["SMOKE_TOKEN"],
+          f"got {shared}")
+    check("env_share never echoes the values", "one" not in str(shared), f"got {shared}")
+    subscriber = call_tool(sid, "bash_mcp_session_create", {"name": "smoke-sub"})
+    sid_sub = subscriber.get("session_id")
+    bound = call_tool(sid, "bash_mcp_session_bind_env",
+                      {"session_id": sid_sub, "env_name": "smoke-api"})
+    check("session_bind_env binds the shared env", bound.get("shared_env") == "smoke-api",
+          f"got {bound}")
+    r = call_tool(sid, "bash_mcp_session_run",
+                  {"session_id": sid_sub, "command": "echo $SMOKE_TOKEN"})
+    check("the subscribed session sees the shared var",
+          r.get("stdout", "").strip() == "one", f"got {r}")
+    call_tool(sid, "bash_mcp_env_share",
+              {"name": "smoke-api", "vars": {"SMOKE_TOKEN": "two"}})
+    r = call_tool(sid, "bash_mcp_session_run",
+                  {"session_id": sid_sub, "command": "echo $SMOKE_TOKEN"})
+    check("the shared env is live (the next run sees the new value)",
+          r.get("stdout", "").strip() == "two", f"got {r}")
+    plain = call_tool(sid, "bash_mcp_session_create", {"name": "smoke-plain"})
+    r = call_tool(sid, "bash_mcp_session_run",
+                  {"session_id": plain.get("session_id"), "command": "echo $SMOKE_TOKEN"})
+    check("a session that is not subscribed does not see it",
+          r.get("stdout", "").strip() == "", f"got {r}")
+    envs = call_tool(sid, "bash_mcp_env_list")
+    entry = next((e for e in envs.get("envs", []) if e["name"] == "smoke-api"), None)
+    check("env_list reports the subscribed session",
+          entry is not None and sid_sub in entry.get("sessions", []), f"got {entry}")
+    check("env_list never echoes the values", "two" not in str(envs), f"got {envs}")
+    deleted = call_tool(sid, "bash_mcp_env_delete", {"name": "smoke-api"})
+    check("env_delete unbinds the session", deleted.get("unbound_sessions", 0) >= 1,
+          f"got {deleted}")
+    for s_id in (sid_fork, sid_parent, sid_sub, plain.get("session_id")):
+        if s_id:
+            call_tool(sid, "bash_mcp_session_destroy", {"session_id": s_id})
 
     # ============================================================
     print("\n" + "=" * 60)

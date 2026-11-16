@@ -17,7 +17,7 @@ A small MCP server that exposes WSL bash as a structured tool to MiniMax Code. S
 
 ```
 src/bash_mcp/
-├── server.py       # FastMCP server + 12 tools (@mcp.tool) — 6 stateless + 4 session + 1 classify + 1 audit-read (v0.6/v0.7/v0.7.1)
+├── server.py       # FastMCP server + 17 tools (@mcp.tool) — stateless + sessions (incl. fork) + shared envs + classify + audit-read
 ├── executor.py     # subprocess.run wrapper, timeout, truncation, cwd allowlist, concurrency slot
 ├── safety.py       # classify(command) -> Class.{SAFE,DANGEROUS,REJECT}
 ├── audit.py        # JSONL append-only logger + size-based rotation (v0.3) + opt-in gzip-on-rotation (v0.7) + read-back (v0.7.1)
@@ -39,6 +39,10 @@ tests/
 ├── test_session_store.py     # 14 cases: SQLite store (v0.9)
 ├── test_sessions_persistence.py # 15 cases: registry <-> store wiring (v0.9)
 ├── test_server_persistence.py  # 4 cases: status + boot restore (v0.9)
+├── test_live_server_probe.py   # 10 cases: probe decision matrix
+├── test_session_fork.py        # session forking (v0.11)
+├── test_shared_env.py          # shared environments (v0.11)
+├── test_session_tools.py       # v0.11 tools + live layering
 └── test_e2e.py               # 21 cases: live server round-trip (incl. 5 session e2e + 5 classify e2e)
 infra/                                  # deployment artifacts (v0.2+)
 ├── install.sh                          # idempotent deploy to fresh WSL/Windows
@@ -385,3 +389,43 @@ file is present.
 - `tests/test_audit_gzip_rotation.py` (+9) — the rotation lifecycle: every
   generation survives at the right index, the oldest is still dropped, and
   the sweep never clobbers an existing archive.
+
+## v0.11 (added 2026-11-16)
+
+### What shipped
+
+- **Session fork** — `bash_mcp_session_fork(session_id, name?, cwd?)` copies the
+  parent's `cwd` and local `env` into a new, independent session. The parent
+  is untouched. A shared-env binding is inherited by reference (the child
+  keeps seeing that env live).
+- **Shared environments** — a named dict several sessions can subscribe to,
+  re-read on every run. Four tools: `bash_mcp_env_share`, `bash_mcp_env_list`,
+  `bash_mcp_env_delete`, `bash_mcp_session_bind_env`.
+
+### Design rules
+
+- **The values of a shared env are write-only.** They are applied to the
+  commands but never returned: `env_share`/`env_list` expose key names and
+  counts only, and the audit log records keys, never values — the same rule
+  the rest of the audit trail follows. A shared env usually holds secrets.
+- **Layering is `os.environ` < shared env < the session's own env.** The
+  session's own value wins on a key clash (it is more specific).
+- **The shared env is re-read on every run.** That is what makes it live:
+  rotating a token updates every subscribed session on its next command. The
+  cost is one SQLite read per run.
+- **One shared env per session.** `session_env_bindings.session_id` is the
+  PRIMARY KEY, so the schema enforces it; binding again replaces it.
+- **No `ALTER TABLE` on `sessions`.** The shared envs and the bindings live in
+  their own tables (`shared_envs`, `session_env_bindings`), so an existing
+  `sessions.db` needs no migration. `SCHEMA_VERSION` is now 2.
+- **The tool list is derived, not maintained.** `bash_mcp_status` reads it
+  from `mcp._tool_manager._tools` (with a static fallback), so a new
+  `@mcp.tool` cannot drift out of the status payload.
+
+### Test layout
+
+- `tests/test_session_store.py` (+10) — the shared-env store API.
+- `tests/test_session_fork.py` (13) — forking semantics.
+- `tests/test_shared_env.py` (16) — binding, live layering, lifecycle.
+- `tests/test_session_tools.py` (24) — the tools, the error envelopes, the
+  audit entries and the live layering through the real tool.

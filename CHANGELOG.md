@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-11-16
+
+### Added
+
+- **Session fork** — `bash_mcp_session_fork(session_id, name?, cwd?)` branches a session: the copy starts with the parent's `cwd` and local `env` as they are at that instant, and the parent is left untouched. A shared-env binding is inherited by reference, so the copy keeps seeing that env live. The fork is an ordinary session and is persisted like any other.
+- **Shared environments** — a named dict of variables that several sessions subscribe to, re-read on **every** run:
+  - `bash_mcp_env_share(name, vars, unset?)` — create or update a shared env (`vars` merges, `unset` removes keys).
+  - `bash_mcp_env_list()` — the shared envs and their subscribers.
+  - `bash_mcp_env_delete(name)` — delete it and unsubscribe the sessions.
+  - `bash_mcp_session_bind_env(session_id, env_name?)` — subscribe a session; omit `env_name` to unsubscribe.
+  - **Layering:** `os.environ` < shared env < the session's own env; the session's own value wins on a clash.
+  - **One shared env per session**; binding again replaces the previous one.
+  - **The values are write-only:** applied to the commands, never echoed back. `env_share` and `env_list` return key names and counts only, and the audit log records keys, never values.
+
+### Changed
+
+- **17 tools** (up from 12).
+- **`bash_mcp_status`** derives the tool list from the FastMCP tool manager instead of a hand-maintained list (with a static fallback), so a new tool can no longer drift out of the status payload. It also reports `shared_envs.{count, names}`.
+- **`bash_mcp_session_run`** reports `shared_env` next to `env_keys`; `env_keys` keeps listing the session's *own* variables.
+- **`bash_mcp_session_create`** accepts an optional `shared_env` to subscribe the new session in one call.
+
+### Storage
+
+- Two new SQLite tables in the same `sessions.db`: `shared_envs(name PK, env_json, created_at, updated_at)` and `session_env_bindings(session_id PK, env_name)`. **No `ALTER TABLE` on `sessions`** — an existing database needs no migration. `SCHEMA_VERSION` is now 2.
+- Deleting a session drops its binding; deleting a shared env unsubscribes every session that used it.
+
+### Tests
+
+- **422 passing** (up from 347).
+- New `tests/test_session_store.py` cases for the shared-env store API, `tests/test_session_fork.py` (13), `tests/test_shared_env.py` (16) and `tests/test_session_tools.py` (24 — tools, error envelopes, audit entries and the live layering through the real tool).
+- `tests/test_e2e.py` gained two live cases (fork independence, shared env live) and the tool list assertion now covers the 17 tools.
+- `infra/scripts/smoke-v07.py`: 115 cases (up from 101) with a live section for the fork and the shared env.
+
 ## [0.10.0] — 2026-11-11
 
 ### Fixed

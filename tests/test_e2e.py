@@ -91,7 +91,7 @@ def _call_tool(sid: str, name: str, arguments: dict | None = None) -> dict:
 
 
 def test_tools_list(sid: str) -> None:
-    """All 10 tools (6 v0.1-v0.3 + 4 v0.6 sessions + echo) should be listed."""
+    """Every registered tool must be listed (17 as of v0.11)."""
     with httpx.Client(timeout=5.0) as c:
         r = c.post(
             ENDPOINT,
@@ -105,13 +105,19 @@ def test_tools_list(sid: str) -> None:
         assert m
         payload = json.loads(m.group(1))
     names = sorted(t["name"] for t in payload["result"]["tools"])
+    assert len(names) == 17, names  # 16 bash-mcp tools + echo
     assert names == [
         "bash_check_env",
         "bash_list_binaries",
         "bash_mcp_audit_read",
         "bash_mcp_classify",
+        "bash_mcp_env_delete",
+        "bash_mcp_env_list",
+        "bash_mcp_env_share",
+        "bash_mcp_session_bind_env",
         "bash_mcp_session_create",
         "bash_mcp_session_destroy",
+        "bash_mcp_session_fork",
         "bash_mcp_session_list",
         "bash_mcp_session_run",
         "bash_mcp_status",
@@ -534,3 +540,98 @@ def sid(live_server: str) -> str:
     """
     s, _ = _mcp_session()
     return s
+
+
+def test_session_fork_e2e(sid: str) -> None:
+    """A fork copies the parent's cwd + env and leaves the parent alone."""
+    parent = _call_tool(
+        sid, "bash_mcp_session_create", {"name": "fork-parent", "cwd": "/tmp"}
+    )["session_id"]
+    _call_tool(
+        sid,
+        "bash_mcp_session_run",
+        {"session_id": parent, "command": "export FORKED=yes"},
+    )
+
+    forked = _call_tool(sid, "bash_mcp_session_fork", {"session_id": parent})
+    assert forked["forked_from"] == parent
+    child = forked["session_id"]
+
+    listed = _call_tool(sid, "bash_mcp_session_list")
+    sessions = listed["sessions"] if isinstance(listed, dict) else listed
+    child_entry = next(s for s in sessions if s["session_id"] == child)
+    assert "FORKED" in child_entry["env_keys"], child_entry
+
+    # The child is independent: exporting in it does not touch the parent.
+    _call_tool(
+        sid,
+        "bash_mcp_session_run",
+        {"session_id": child, "command": "export CHILDONLY=1"},
+    )
+    listed = _call_tool(sid, "bash_mcp_session_list")
+    sessions = listed["sessions"] if isinstance(listed, dict) else listed
+    parent_entry = next(s for s in sessions if s["session_id"] == parent)
+    assert "CHILDONLY" not in parent_entry["env_keys"], parent_entry
+
+    _call_tool(sid, "bash_mcp_session_destroy", {"session_id": child})
+    _call_tool(sid, "bash_mcp_session_destroy", {"session_id": parent})
+
+
+def test_shared_env_is_live_e2e(sid: str) -> None:
+    """A shared env reaches the subscribed session and updates live."""
+    shared = _call_tool(
+        sid,
+        "bash_mcp_env_share",
+        {"name": "e2e-api", "vars": {"E2E_TOKEN": "one"}},
+    )
+    assert shared["env_keys"] == ["E2E_TOKEN"], shared
+    assert "one" not in json.dumps(shared), shared
+
+    session = _call_tool(
+        sid, "bash_mcp_session_create", {"name": "e2e-shared"}
+    )["session_id"]
+    _call_tool(
+        sid,
+        "bash_mcp_session_bind_env",
+        {"session_id": session, "env_name": "e2e-api"},
+    )
+
+    out = _call_tool(
+        sid,
+        "bash_mcp_session_run",
+        {"session_id": session, "command": "echo $E2E_TOKEN"},
+    )
+    assert out["stdout"].strip() == "one", out
+
+    # Live: the next run sees the new value.
+    _call_tool(
+        sid,
+        "bash_mcp_env_share",
+        {"name": "e2e-api", "vars": {"E2E_TOKEN": "two"}},
+    )
+    out = _call_tool(
+        sid,
+        "bash_mcp_session_run",
+        {"session_id": session, "command": "echo $E2E_TOKEN"},
+    )
+    assert out["stdout"].strip() == "two", out
+
+    # A session that is not subscribed does not see it.
+    plain = _call_tool(
+        sid, "bash_mcp_session_create", {"name": "e2e-plain"}
+    )["session_id"]
+    out = _call_tool(
+        sid,
+        "bash_mcp_session_run",
+        {"session_id": plain, "command": "echo $E2E_TOKEN"},
+    )
+    assert out["stdout"].strip() == "", out
+
+    listed = _call_tool(sid, "bash_mcp_env_list")
+    entry = next(e for e in listed["envs"] if e["name"] == "e2e-api")
+    assert entry["sessions"] == [session], entry
+    assert "two" not in json.dumps(listed), listed
+
+    _call_tool(sid, "bash_mcp_env_delete", {"name": "e2e-api"})
+    _call_tool(sid, "bash_mcp_session_destroy", {"session_id": session})
+    _call_tool(sid, "bash_mcp_session_destroy", {"session_id": plain})

@@ -1,13 +1,13 @@
 ﻿---
 name: bash-mcp
-description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_audit_read (read audit backups, v0.7.1), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6). Per-project cwd allowlists via `.bash-mcp.toml` (v0.8): drop a TOML in your repo root to extend or replace the global allowlist. v0.9: sessions are persisted to disk and restored when the server restarts."
+description: "WSL bash executor MCP — REQUIRED way to run WSL commands from the agent. Triggers on 'wsl', 'bash', 'shell', 'command', 'exec', 'terminal', 'ubuntu', 'linux', or any prompt that requires running shell commands inside WSL. Use bash_run_command instead of `wsl -d ... -- bash -c \"...\"` from PowerShell — the latter has quoting, UTF-16, and PATH bugs. Other tools: bash_check_env (OS/PATH info), bash_list_binaries (known tools), bash_which (resolve binary), bash_mcp_status (service health), bash_mcp_classify (denylist explainer, v0.7), bash_mcp_audit_read (read audit backups, v0.7.1), bash_mcp_session_create/run/destroy/list (stateful cwd+env sessions, v0.6). Per-project cwd allowlists via `.bash-mcp.toml` (v0.8): drop a TOML in your repo root to extend or replace the global allowlist. v0.9: sessions are persisted to disk and restored when the server restarts. v0.11: bash_mcp_session_fork branches a session, and the shared-env tools (bash_mcp_env_share/list/delete, bash_mcp_session_bind_env) let several sessions share one live set of variables."
 license: MIT
 metadata:
   version: "1.9"
   category: tools
 ---
 
-# bash-mcp — WSL Bash Executor (v0.8.0)
+# bash-mcp — WSL Bash Executor (v0.11.0)
 
 The **REQUIRED** way to run WSL bash commands from this agent. Replaces the old `wsl -d Ubuntu-22.04 -- bash -lc "..."` pattern.
 
@@ -133,6 +133,21 @@ const r = bash_mcp_session_run({
 // 4. Cleanup
 bash_mcp_session_destroy({session_id})
 ```
+
+### `bash_mcp_session_fork(session_id, name?, cwd?) → {session_id, ...}` (v0.11)
+
+Branch a session. The copy starts with the parent's `cwd` and its own `env` as they are right now; the parent is untouched. Use it to try a different line of work without losing the state you built up. A shared-env binding is inherited, and the copy keeps seeing that env live.
+
+## Shared environments (v0.11)
+
+A shared env is a named set of variables that several sessions can subscribe to. It is re-read on every run, so changing it updates every subscribed session on its next command — the way to rotate a token for a whole fleet of sessions.
+
+- `bash_mcp_env_share(name, vars, unset?)` — create or update a shared env. `vars` merges into it, `unset` removes keys.
+- `bash_mcp_env_list()` — the shared envs, their key names and the sessions subscribed to each.
+- `bash_mcp_env_delete(name)` — delete it and unsubscribe the sessions (the sessions survive).
+- `bash_mcp_session_bind_env(session_id, env_name?)` — subscribe a session; omit `env_name` to unsubscribe.
+
+**The values are write-only.** They are applied to the commands but never echoed back: `env_share` and `env_list` return key names and counts only. Layering is `os.environ` < shared env < the session's own env, so a session's own value wins. One shared env per session.
 
 ## Safety Model
 
