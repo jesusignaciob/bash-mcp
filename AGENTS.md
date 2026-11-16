@@ -72,6 +72,28 @@ Test:
 uv run pytest tests/ -v
 ```
 
+### The e2e tests must be run from OUTSIDE the server
+
+`tests/test_e2e.py` (24 tests) hits the live server on `127.0.0.1:54321`. The
+server serializes its work: while it executes a tool call it does not answer
+any other MCP request, so **running the suite through bash-mcp makes the e2e
+tests skip** (with a visible reason, but skip). Run them from an external
+shell:
+
+```bash
+uv run pytest tests/ -m e2e -v -rs      # only the live tests
+uv run pytest tests/ -m "not e2e" -v     # only the offline tests
+```
+
+The `live_server` fixture in `tests/conftest.py` decides between running and
+skipping, and it never skips silently: a server that listens on the port but
+does not answer the MCP handshake **fails** the suite instead of quietly
+dropping the tests. The decision matrix lives in `tests/live_server.py`.
+
+**Never** reintroduce a module-level `pytest.mark.skipif(not probe(), ...)`
+in the e2e module: a skipif cannot tell "no server" from "server busy", and
+that ambiguity is what used to hide 24 skipped tests behind a green run.
+
 ## Runtime reality: this WSL has `systemd=false`
 
 `/etc/wsl.conf` on this machine sets `systemd=false`, so PID 1 is not systemd and

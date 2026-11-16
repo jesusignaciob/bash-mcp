@@ -473,14 +473,49 @@ uv run python -m bash_mcp.server --transport streamable-http --host 0.0.0.0 --po
 uv run pytest tests/ -v
 ```
 
-**164 tests** cover:
+**357 tests** cover:
 
-- 115 safety cases (test_safety.py) — parametrized denylist + safe baselines + review-history
-- 27 executor cases (test_executor.py) — subprocess + cwd allowlist + Windows→WSL
+- 106 safety cases (test_safety.py) — parametrized denylist + safe baselines + review-history
+- 53 session registry cases (test_sessions.py) — create/run/destroy/list + state parsing
+- 30 executor cases (test_executor.py) — subprocess + cwd allowlist + Windows→WSL
+- 24 e2e cases against the live server (test_e2e.py)
+- 20 session auto-TTL cases (test_sessions_ttl.py)
+- 15 session persistence cases (test_sessions_persistence.py)
+- 15 denylist-explainer cases (test_classify_tool.py)
+- 14 gzip-on-rotation cases (test_audit_gzip.py)
+- 12 audit read-back cases (test_audit_read.py)
+- 11 per-project allowlist cases (test_project_allowlist.py)
+- 10 live-server probe cases (test_live_server_probe.py)
 - 9 error envelope cases (test_errors.py)
+- 9 gzip rotation-lifecycle cases (test_audit_gzip_rotation.py)
 - 6 audit log rotation cases (test_audit_rotation.py)
 - 5 concurrency limit cases (test_concurrency.py)
-- 11 e2e tests against the live server (test_e2e.py)
+- 4 server-persistence cases (test_server_persistence.py)
+
+#### The end-to-end tests need a server that is not busy
+
+`test_e2e.py` (24 tests) hits the live server on `127.0.0.1:54321`. The server
+serializes its work: while it executes a tool call it does not answer any
+other MCP request. So **running the suite through bash-mcp makes the e2e tests
+skip** — explicitly, with a visible reason, but skip. Run them from a shell
+*outside* the server:
+
+```bash
+uv run pytest tests/ -m e2e -v -rs      # only the live tests
+uv run pytest tests/ -m "not e2e" -v     # only the offline tests
+```
+
+The `live_server` fixture (`tests/conftest.py`) decides between running and
+skipping, and it never skips silently:
+
+| Server state | Outcome |
+|---|---|
+| Nothing listening on the port | the e2e are **skipped**, with the reason shown by `pytest -rs` |
+| Listening and answering | the e2e **run** |
+| Listening but not answering, suite running *inside* the server | the e2e are **skipped** with the reason shown |
+| Listening but not answering, suite running *outside* the server | the suite **fails** — something is genuinely wrong |
+
+See `tests/live_server.py` for the decision matrix.
 
 ### Project layout
 
@@ -503,7 +538,9 @@ bash-mcp/
 │   ├── concurrency.py               # BoundedSemaphore wrapper
 │   ├── sessions.py                  # stateful sessions (cwd + env across calls)
 │   └── project_allowlist.py         # per-project .bash-mcp.toml resolution
-├── tests/                           # 281 tests (24 e2e skipped without a live server)
+├── tests/                           # 357 tests (24 e2e need a live server)
+│   ├── conftest.py                  # session-store isolation + the live_server gate
+│   ├── live_server.py               # live-server probe + run/skip/fail decision matrix
 │   ├── test_safety.py               # denylist cases
 │   ├── test_executor.py             # subprocess + cwd allowlist
 │   ├── test_errors.py               # error envelope shape + hints
@@ -516,6 +553,7 @@ bash-mcp/
 │   ├── test_sessions.py             # session create / run / destroy / list
 │   ├── test_sessions_ttl.py         # idle TTL janitor
 │   ├── test_project_allowlist.py    # .bash-mcp.toml resolution
+│   ├── test_live_server_probe.py    # probe decision matrix
 │   └── test_e2e.py                  # live-server round-trips
 └── infra/                           # deployment artifacts
     ├── install.sh                   # idempotent deploy (--dry-run supported)

@@ -1,11 +1,21 @@
 """End-to-end test against a running bash-mcp server.
 
 Hits the live streamable-http endpoint at http://127.0.0.1:54321/mcp/.
-The server must be running (via systemd or `uv run python -m bash_mcp.server`).
-Skipped automatically if the server is not reachable.
+The server must be running: start it with `bash infra/launcher.sh` (this
+instance runs `systemd=false`, so the launcher is the supported path).
 
-Run:
-    uv run pytest tests/test_e2e.py -v
+Run them from a shell OUTSIDE the server:
+
+    uv run pytest tests/test_e2e.py -v -rs
+
+Why outside? The server serializes its work: while it executes a tool
+call it does not answer any other MCP request. When the suite runs
+*through* bash-mcp, the pytest process asks the very server that is
+serving it, the probe cannot be answered, and the end-to-end tests are
+skipped - explicitly, with a reason, but skipped. The `live_server`
+fixture in `tests/conftest.py` decides between running and skipping;
+a server that listens but does not answer fails the suite instead of
+quietly dropping these tests.
 """
 
 from __future__ import annotations
@@ -18,33 +28,13 @@ import httpx
 import pytest
 
 from bash_mcp import __version__
+from tests.live_server import ENDPOINT
 
-ENDPOINT = "http://127.0.0.1:54321/mcp/"
-
-
-def _server_reachable() -> bool:
-    try:
-        r = httpx.post(
-            ENDPOINT,
-            headers={"Content-Type": "application/json",
-                     "Accept": "application/json, text/event-stream"},
-            json={
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"protocolVersion": "2024-11-05",
-                            "capabilities": {},
-                            "clientInfo": {"name": "test-e2e", "version": "0.1"}},
-            },
-            timeout=3.0,
-        )
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _server_reachable(),
-    reason="bash-mcp server not reachable at " + ENDPOINT,
-)
+# Marks the whole module as requiring a live server. The decision to run
+# or skip is taken by the `live_server` fixture (tests/conftest.py), not
+# by a module-level skipif - a skipif cannot tell "no server" from
+# "server busy" and used to hide 24 skipped tests behind a green run.
+pytestmark = pytest.mark.e2e
 
 
 def _mcp_session() -> tuple[str, str]:
@@ -536,6 +526,11 @@ def test_audit_read_e2e_nonexistent_returns_error(sid: str) -> None:
 
 
 @pytest.fixture
-def sid() -> str:
+def sid(live_server: str) -> str:
+    """Open an MCP session on the live server.
+
+    Depends on `live_server`, so the probe decision (run / skip / fail)
+    is taken before any end-to-end test touches the network.
+    """
     s, _ = _mcp_session()
     return s

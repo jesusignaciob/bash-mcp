@@ -231,9 +231,10 @@ bash_mcp_session_destroy({session_id})
 
 ## Operational Notes
 
-- Server runs in WSL via systemd (`systemctl --user status bash-mcp.service`).
+- Server runs in WSL inside a `screen` session (`screen -r bash-mcp` to attach; this instance has `systemd=false`, so `systemctl --user` does nothing). Start it with `bash ~/projects/bash-mcp/infra/launcher.sh`.
 - Listens on `http://172.20.50.88:54321/mcp/` (WSL IP changes on reboot; run `./infra/update-ip.sh` from the repo root to refresh).
-- Logs: `journalctl --user -u bash-mcp.service -f` or `screen -r bash-mcp`.
+- Logs: `screen -r bash-mcp` (detach with Ctrl-A d).
+- The server handles one request at a time: while it runs a tool call it does not answer other MCP requests. If you run this project's test suite *through* bash-mcp, the 24 end-to-end tests are skipped (with a visible reason). Run them from a shell outside the server: `uv run pytest tests/ -m e2e -v -rs`.
 - Audit: `tail -f ~/.local/share/bash-mcp/audit.jsonl`.
 - Deploy a fresh WSL/Windows setup: `./infra/install.sh` from the repo root.
 
